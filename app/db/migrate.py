@@ -15,7 +15,6 @@ async def init_db():
 
 if __name__ == "__main__":
     import asyncio
-    from app.config.config import settings
 
     async def main():
         await db.connect()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from app.models.schemas import ObservationCreate, ObservationResponse, ObservationSearchRequest, ObservationSearchResult
 from app.services.observation_store import ObservationStore
 from app.services.search import SearchService

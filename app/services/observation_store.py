@@ -1,7 +1,6 @@
-import asyncpg
 from app.db.connection import db
-from app.models.schemas import ObservationCreate, ObservationResponse
-from typing import List, Optional, Dict, Any
+from app.models.schemas import ObservationCreate
+from typing import Optional, Dict, Any
 
 class ObservationStore:
     async def create(self, obs: ObservationCreate) -> int:
@@ -18,6 +17,11 @@ class ObservationStore:
             RETURNING id;
         """
         async with pool.acquire() as conn:
+            # Pre-serialize JSON fields to avoid syntax errors in function arguments
+            import json
+            objects_json = json.dumps(obs.objects_json) if obs.objects_json else None
+            media_paths_json = json.dumps(obs.media_paths_json) if obs.media_paths_json else None
+
             res = await conn.fetchval(
                 query,
                 obs.sensor_id,
@@ -25,15 +29,13 @@ class ObservationStore:
                 obs.room_name,
                 obs.observed_at,
                 obs.source,
-                # Converting to JSON string for JSONB insertion via asyncpg
-                # In a real scenario, we'd use the driver's native JSON support
-                import json; json.dumps(obs.objects_json) if obs.objects_json else None,
+                objects_json,
                 obs.persons_count,
                 obs.hazard_flags,
                 obs.description,
                 obs.object_list,
                 obs.workflow_execution_id,
-                import json; json.dumps(obs.media_paths_json) if obs.media_paths_json else None,
+                media_paths_json,
                 obs.embedding
             )
             return res

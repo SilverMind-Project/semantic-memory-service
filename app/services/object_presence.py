@@ -1,6 +1,4 @@
-import asyncpg
 from app.db.connection import db
-from typing import Optional
 
 class ObjectPresenceStore:
     async def upsert_presence(

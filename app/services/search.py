@@ -1,7 +1,6 @@
-import asyncpg
 from app.db.connection import db
 from app.models.schemas import ObservationSearchRequest, ObservationSearchResult
-from typing import List, Optional
+from typing import List
 
 class SearchService:
     async def search_observations(

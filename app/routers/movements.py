@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from app.models.schemas import MovementCreate, MovementResponse, MovementTransitionRequest, MovementTransitionResponse
+from fastapi import APIRouter, HTTPException, status
+from app.models.schemas import MovementCreate, MovementResponse, MovementTransitionResponse
 from app.services.movement_store import MovementStore
 from typing import List
 

@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
-from app.models.schemas import ObjectPresenceResponse
+from fastapi import APIRouter
 from typing import List
 
 router = APIRouter(prefix="/objects", tags=["objects"])

@@ -1,87 +1,105 @@
 from app.db.connection import db
-from app.models.schemas import SceneObservationCreate, PersonMovementCreate, ObjectPresence
-from datetime import datetime
-from typing import List, Optional
+from app.models.schemas import ObservationCreate, ObservationSearchRequest, ObservationSearchResult
+from typing import List, Dict, Any
+import json
+
 
 class ObservationStore:
-    async def create_observation(self, obs: SceneObservationCreate) -> int:
+    async def create_observation(self, obs: ObservationCreate) -> int:
         query = """
-            INSERT INTO scene_observations (
-                sensor_id, room_id, room_name, observed_at, source, 
-                objects_json, persons_count, hazard_flags, description, 
+            INSERT INTO observations (
+                room_name, observed_at, source, objects_json,
+                persons_count, hazard_flags, description,
                 object_list, workflow_execution_id, media_paths_json, embedding
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id;
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+            ) RETURNING id
         """
-        async with db.pool.acquire() as conn:
-            obs_id = await conn.fetchval(
-                query,
-                obs.sensor_id,
-                obs.room_id,
-                obs.room_name,
-                obs.observed_at,
-                obs.source,
-                # Convert list to JSON string for PostgreSQL JSONB
-                import json; json.dumps(obs.objects_json) if obs.objects_json else None,
-                obs.persons_count,
-                obs.hazard_flags,
-                obs.description,
-                import json; json.dumps(obs.object_list) if obs.object_list else None,
-                obs.workflow_execution_id,
-                import json; json.dumps(obs.media_paths_json) if obs.media_paths_json else None,
-                import json; json.dumps(obs.embedding) if obs.embedding else None,
-            )
-            return obs_id
+        obs_id = await db.fetchval(
+            query,
+            obs.room_name,
+            obs.observed_at,
+            obs.source,
+            json.dumps(obs.objects_json) if obs.objects_json else None,
+            obs.persons_count,
+            obs.hazard_flags,
+            obs.description,
+            json.dumps(obs.object_list) if obs.object_list else None,
+            obs.workflow_execution_id,
+            json.dumps(obs.media_paths_json) if obs.media_paths_json else None,
+            json.dumps(obs.embedding) if obs.embedding else None,
+        )
+        return obs_id
 
-    async def search_observations(self, search_params: dict):
-        # This is a simplified implementation. 
-        # A production version would build the query dynamically.
-        query = "SELECT id, observed_at, room_name, description, hazard_flags, object_list FROM scene_observations WHERE 1=1"
-        args = []
-        idx = 1
-        
-        if search_params.get("room_id"):
-            query += f" AND room_id = ${idx}"
-            args.append(search_params["room_rad"]) # Typo in thought, fixing below
-            idx += 1
-        # ... (more complex logic would go here)
-        return await db.fetch(query, *args)
+    async def search_observations(self, query: ObservationSearchRequest) -> List[ObservationSearchResult]:
+        args: List[Any] = []
+        conditions = []
+
+        if query.room_name:
+            conditions.append("room_name ILIKE %s")
+            args.append(f"%{query.room_name}%")
+
+        if query.start_date:
+            conditions.append("observed_at >= %s")
+            args.append(query.start_date)
+
+        if query.end_date:
+            conditions.append("observed_at <= %s")
+            args.append(query.end_date)
+
+        if query.objects:
+            conditions.append("objects_json @> %s")
+            args.append(json.dumps(query.objects))
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        sql = f"""
+            SELECT id, room_name, observed_at, source, objects_json,
+                   persons_count, hazard_flags, description,
+                   object_list, workflow_execution_id, media_paths_json, embedding
+            FROM observations
+            WHERE {where_clause}
+            ORDER BY observed_at DESC
+            LIMIT 100
+        """
+        return await db.fetch(sql, *args)
+
 
 class MovementStore:
-    async def create_movement(self, move: PersonMovementCreate, observation_id: int):
+    async def create_movement(self, move: Dict[str, Any], observation_id: int):
         query = """
-            INSERT INTO person_movements (
-                person_id, person_name, sensor_id, from_room_id, to_room_id, 
-                from_room_name, to_room_name, direction_raw, direction_semantic, 
-                confidence, observed_at, observation_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            INSERT INTO movements (
+                person_id, from_room, to_room, timestamp, observation_id
+            ) VALUES (%s, %s, %s, %s, %s)
         """
-        async with db.pool.acquire() as conn:
-            await conn.execute(
-                query,
-                move.person_id,
-                move.person_name,
-                move.sensor_id,
-                move.from_room_id,
-                move.to_room_id,
-                move.from_room_name,
-                move.to_room_name,
-                move.direction_raw,
-                move.direction_semantic,
-                move.confidence,
-                move.observed_at,
-                observation_id
-            )
+        await db.execute(query, move["person_id"], move["from_room"], move["to_room"], move["timestamp"], observation_id)
+
+    async def get_movements(self, room: str, start_time: str, end_time: str) -> List[Dict[str, Any]]:
+        query = """
+            SELECT m.*, o.room_name as source_room
+            FROM movements m
+            JOIN observations o ON m.observation_id = o.id
+            WHERE m.from_room = %s OR m.to_room = %s
+            AND m.timestamp >= %s AND m.timestamp <= %s
+            ORDER BY m.timestamp DESC
+        """
+        return await db.fetch(query, room, room, start_time, end_time)
+
 
 class ObjectPresenceStore:
-    async def upsert_presence(self, room_id: str, object_label: str, observation_id: int, observed_at: datetime):
+    async def record_object_presence(self, room: str, object_name: str, timestamp: str, observation_id: int):
         query = """
-            INSERT INTO object_presence (room_id, object_label, first_seen_at, last_seen_at, observation_count, last_observation_id)
-            VALUES ($1, $2, $3, $4, 1, $5)
-            ON CONFLICT (room_id, object_label) DO UPDATE SET
-                last_seen_at = EXCLUDED.last_seen_at,
-                observation_count = object_presence.observation_count + 1,
-                last_observation_id = EXCLUDED.last_observation_id;
+            INSERT INTO object_presence (room, object_name, timestamp, observation_id)
+            VALUES (%s, %s, %s, %s)
         """
-        async with db.pool.acquire() as conn:
-            await conn.execute(query, room_id, object_label, observed_at, observed_at, observation_id)
+        await db.execute(query, room, object_name, timestamp, observation_id)
+
+    async def get_objects_in_room(self, room: str, since: str) -> List[Dict[str, Any]]:
+        query = """
+            SELECT DISTINCT object_name, MAX(timestamp) as last_seen
+            FROM object_presence
+            WHERE room = %s AND timestamp >= %s
+            GROUP BY object_name
+            ORDER BY last_seen DESC
+        """
+        return await db.fetch(query, room, since)

@@ -1,6 +1,5 @@
-import asyncpg
 from app.db.connection import db
-from app.models.schemas import MovementCreate, MovementResponse, MovementTransitionResponse
+from app.models.schemas import MovementCreate, MovementTransitionResponse
 from typing import List, Optional
 
 class MovementStore:
