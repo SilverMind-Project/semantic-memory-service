@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from app.services.search import SearchService
 from app.models.schemas import ObservationSearchRequest
 
@@ -8,17 +8,22 @@ async def test_search_observations_logic():
     # Mock the database pool and connection
     mock_pool = MagicMock()
     mock_conn = MagicMock()
-    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
     
-    # Mock fetch to return a dummy row
-    mock_conn.fetch.return_value = [{
+    # Create an async mock for the context manager
+    async_mock = AsyncMock()
+    async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
+    async_mock.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = MagicMock(return_value=async_mock)
+    
+    # Mock fetch to return a dummy row - make it async
+    mock_conn.fetch = AsyncMock(return_value=[{
         'id': 1,
         'observed_at': '2026-04-14T00:00:00Z',
         'room_name': 'living_room',
         'description': 'A person is sitting on the sofa',
         'hazard_flags': ['none'],
         'object_list': ['person', 'sofa']
-    }]
+    }])
 
     # Patch the db.get_pool to return our mock pool
     with patch("app.db.connection.db.get_pool", return_value=mock_pool):

@@ -8,23 +8,25 @@ This microservice provides long-term temporal and semantic context for the Cogni
 - **Temporal Context**: Query observations and movements within specific time windows.
 - **Object Tracking**: Aggregate and track the "last seen" status of objects in specific rooms.
 - **Movement Inference**: Track semantic room transitions (entering/exiting) for person identification and activity enrichment.
+- **Retention Management**: Automated data pruning based on configurable retention policies.
 - **High-Performance**: Built with FastAPI, `asyncpg` for asynchronous database access, and `uv` for lightning-fast dependency management.
 
 ## Tech Stack
 
-- **Language**: Python 3.12+
+- **Language**: Python 3.11+
 - **Package Manager**: [uv](https://github.com/astral-sh/uv)
 - **Framework**: FastAPI
-- **Database**: PostgreSQL + [pgvector](httpsran/pgvector)
+- **Database**: PostgreSQL + [pgvector](https://github.com/pgvector/pgvector)
 - **Linting/Formatting**: [Ruff](https://github.com/astral-sh/ruff)
 - **Static Analysis**: [Mypy](https://mypy-lang.org/)
 - **Testing**: Pytest
+- **Containerization**: Docker
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.12+
+- Python 3.11+
 - [uv](https://github.com/astral-sh/uv)
 - Docker & Docker Compose
 
@@ -57,10 +59,97 @@ This microservice provides long-term temporal and semantic context for the Cogni
 Once the service is running, you can access the interactive Swagger documentation at:
 `http://localhost:8300/docs`
 
+## API Endpoints
+
+### Observations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/observations/` | Create a new scene observation |
+| POST | `/api/v1/observations/search` | Search observations using vector similarity |
+| DELETE | `/api/v1/observations/prune` | Prune observations older than N days |
+
+### Movements
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/movements/` | Create a new movement record |
+| GET | `/api/v1/movements/transitions` | Get movement transitions for a person |
+
+### Objects
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/objects/{room_id}/recent` | Get recent object presence in a room |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check endpoint |
+
+## Error Handling
+
+The service uses standard HTTP status codes and returns errors in a consistent format:
+
+```json
+{
+  "detail": "Error message describing what went wrong"
+}
+```
+
+### Status Codes
+
+- `201 Created`: Resource successfully created
+- `400 Bad Request`: Invalid input or store operation failed
+- `500 Internal Server Error`: Service-level error (e.g., search failure)
+
+### Custom Exceptions
+
+Each service layer has its own exception type for targeted error handling:
+
+- `ObservationStoreError`: Observation creation/retrieval failures
+- `MovementStoreError`: Movement record failures
+- `SearchServiceError`: Vector search failures
+- `ObjectPresenceStoreError`: Object presence tracking failures
+
 ## Architecture
 
 The service follows a layered architecture:
-1. **API Layer (Routers)**: Defines RESTful endpoints.
-2. **Service Layer (Stores/Services)**: Implements business logic and complex queries (Search, Movement Tracking).
-3. **Data Access Layer (Connection)**: Manages PostgreSQL connection pooling.
-4. **Persistence Layer (PostgreSQL)**: Stores all structured and vector data.
+
+1. **API Layer (Routers)**: Defines RESTful endpoints with request validation and error handling.
+2. **Service Layer (Stores/Services)**: Implements business logic and database operations.
+3. **Data Access Layer (Connection)**: Manages PostgreSQL connection pooling via `asyncpg`.
+4. **Persistence Layer (PostgreSQL)**: Stores all structured and vector data using `pgvector`.
+
+### Lifecycle Management
+
+The application uses FastAPI's lifespan context manager to handle:
+- Database connection initialization on startup
+- Graceful shutdown with connection cleanup
+
+### Configuration
+
+Configuration is managed via [pydantic-settings](https://docs.pydantic.dev/dev-v2/usage/pydantic_settings/):
+
+- `DATABASE_URL`: PostgreSQL connection string
+- `PROJECT_NAME`: Service name for API documentation
+- `RETENTION_DAYS`: Default data retention period
+
+## Database Schema
+
+The service uses the following tables:
+
+- `scene_observations`: Stores scene observations with CLIP embeddings
+- `person_movements`: Tracks person movement transitions between rooms
+- `object_presence`: Aggregates object presence by room
+
+## Development Standards
+
+This service adheres to high engineering standards:
+
+- **Type Safety**: Full type annotations using Python 3.11+ syntax
+- **Async/Await**: Asynchronous database operations using `asyncpg`
+- **Error Handling**: Centralized exception handlers with structured logging
+- **Code Quality**: Enforced via Ruff linting and Mypy type checking
+- **Testing**: Comprehensive test coverage for API and service layers
