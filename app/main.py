@@ -4,6 +4,10 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+# Import routers (imported at top to avoid circular dependencies)
+from app.routers import observations  # noqa: E402
+
 from app.config.config import settings
 from app.db.connection import db
 from app.services.observation_store import ObservationStoreError
@@ -91,6 +95,10 @@ async def object_presence_store_exception_handler(
         status_code=400,
         content={"detail": str(exc)},
     )
+
+
+# Include routers in app
+app.include_router(observations.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/health")

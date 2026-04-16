@@ -4,13 +4,20 @@ from fastapi import APIRouter, HTTPException, status
 from app.models.schemas import ObservationCreate, ObservationResponse, ObservationSearchRequest, ObservationSearchResult
 from app.services.observation_store import ObservationStore, ObservationStoreError
 from app.services.search import SearchService, SearchServiceError
+from app.services.text_embedder import build_text_embedder
 from app.config.config import settings
 from typing import List
 
 router = APIRouter(prefix="/observations", tags=["observations"])
 
 obs_store = ObservationStore()
-search_service = SearchService()
+search_service = SearchService(
+    text_embedder=build_text_embedder(
+        enabled=settings.TEXT_EMBEDDING_ENABLED,
+        model_name=settings.TEXT_EMBEDDING_MODEL,
+        device="cpu",
+    )
+)
 
 
 @router.post("/", response_model=ObservationResponse, status_code=status.HTTP_201_CREATED)

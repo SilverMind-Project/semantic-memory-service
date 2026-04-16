@@ -32,9 +32,10 @@ class ObservationStore:
             INSERT INTO scene_observations (
                 sensor_id, room_id, room_name, observed_at, source,
                 objects_json, persons_count, hazard_flags, description,
-                object_list, workflow_execution_id, media_paths_json, embedding
+                description_embedding, object_list, workflow_execution_id,
+                media_paths_json, embedding
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING id;
         """
         try:
@@ -53,6 +54,7 @@ class ObservationStore:
                     obs.persons_count,
                     obs.hazard_flags,
                     obs.description,
+                    obs.description_embedding,
                     obs.object_list,
                     obs.workflow_execution_id,
                     media_paths_json,

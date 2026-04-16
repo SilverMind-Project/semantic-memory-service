@@ -21,6 +21,9 @@ class ObservationCreate(BaseModel):
     persons_count: Optional[int] = 0
     hazard_flags: Optional[List[str]] = Field(default_factory=list)
     description: Optional[str] = None
+    description_embedding: Optional[List[float]] = Field(
+        None, description="384-dim text embedding for semantic search"
+    )
     object_list: Optional[List[str]] = Field(default_factory=list)
     workflow_execution_id: Optional[int] = None
     media_paths_json: Optional[List[str]] = None
@@ -32,6 +35,7 @@ class ObservationResponse(ObservationCreate):
 
 class ObservationSearchRequest(BaseModel):
     query_embedding: Optional[List[float]] = None
+    query_text: Optional[str] = None
     room_id: Optional[str] = None
     since_minutes: Optional[int] = None
     objects_any: Optional[List[str]] = None
@@ -46,7 +50,8 @@ class ObservationSearchResult(BaseModel):
     description: Optional[str] = None
     hazard_flags: List[str] = Field(default_factory=list)
     object_list: List[str] = Field(default_factory=list)
-    similarity: Optional[float] = None
+    text_similarity: Optional[float] = None
+    image_similarity: Optional[float] = None
 
 # --- Movement Entities ---
 
