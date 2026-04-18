@@ -13,7 +13,7 @@ This microservice provides long-term temporal and semantic context for the Cogni
 
 ## Tech Stack
 
-- **Language**: Python 3.11+
+- **Language**: Python 3.12+
 - **Package Manager**: [uv](https://github.com/astral-sh/uv)
 - **Framework**: FastAPI
 - **Database**: PostgreSQL + [pgvector](https://github.com/pgvector/pgvector)
@@ -26,9 +26,10 @@ This microservice provides long-term temporal and semantic context for the Cogni
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - [uv](https://github.com/astral-sh/uv)
 - Docker & Docker Compose
+- PostgreSQL 15+ with `pgvector` extension enabled
 
 ### Local Development
 
@@ -76,11 +77,15 @@ Once the service is running, you can access the interactive Swagger documentatio
 | POST | `/api/v1/movements/` | Create a new movement record |
 | GET | `/api/v1/movements/transitions` | Get movement transitions for a person |
 
+> **Note**: The `movements` router exists in `app/routers/movements.py` but is not yet registered in `app/main.py`. These endpoints are currently unavailable.
+
 ### Objects
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/objects/{room_id}/recent` | Get recent object presence in a room |
+
+> **Note**: The `objects` router exists in `app/routers/objects.py` but is not yet registered in `app/main.py`. These endpoints are currently unavailable.
 
 ### Health
 
@@ -133,8 +138,11 @@ The application uses FastAPI's lifespan context manager to handle:
 Configuration is managed via [pydantic-settings](https://docs.pydantic.dev/dev-v2/usage/pydantic_settings/):
 
 - `DATABASE_URL`: PostgreSQL connection string
+- `API_V1_STR`: API version prefix (default: `/api/v1`)
 - `PROJECT_NAME`: Service name for API documentation
 - `RETENTION_DAYS`: Default data retention period
+- `TEXT_EMBEDDING_MODEL`: Sentence-transformers model ID (default: `sentence-transformers/all-MiniLM-L6-v2`)
+- `TEXT_EMBEDDING_ENABLED`: Enable text embedding fallback (default: `true`)
 
 ## Database Schema
 
@@ -148,8 +156,15 @@ The service uses the following tables:
 
 This service adheres to high engineering standards:
 
-- **Type Safety**: Full type annotations using Python 3.11+ syntax
+- **Type Safety**: Full type annotations using Python 3.12+ syntax
 - **Async/Await**: Asynchronous database operations using `asyncpg`
 - **Error Handling**: Centralized exception handlers with structured logging
 - **Code Quality**: Enforced via Ruff linting and Mypy type checking
 - **Testing**: Comprehensive test coverage for API and service layers
+
+## Known Issues
+
+- `aiosqlite` is listed as a dependency in `pyproject.toml` but never used - the service uses `asyncpg` exclusively.
+- Mypy is mentioned in the Development Standards but not listed in dev dependencies in `pyproject.toml`.
+- The `movements` and `objects` router modules exist but are not registered in `app/main.py` - their endpoints are currently unavailable.
+- The Dockerfile uses `python:3.11-slim` but `pyproject.toml` requires `>=3.12`.
