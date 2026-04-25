@@ -2,14 +2,14 @@ version: '3.8'
 
 services:
   semantic-memory-db:
-    image: ankane/pgvector:latest
+    image: pgvector/pgvector:pg17-trixie
     container_name: semantic-memory-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: semantic_memory
     ports:
-      - "5432:5432"
+      - "5442:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,13 +24,13 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@semantic-memory-db:5432/semantic_memory
     ports:
-      - "8300:8300"
+      - "8400:8400"
     depends_on:
       semantic-memory-db:
         condition: service_healthy
     restart: always
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8300/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

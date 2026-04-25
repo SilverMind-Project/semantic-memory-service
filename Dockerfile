@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -8,21 +8,21 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements/pyproject files
-COPY pyproject.toml .
+# Copy requirements/pyproject files and the app package (required by hatchling to build the wheel)
+COPY pyproject.toml README.md ./
+COPY app ./app
 
 # Install dependencies
-# Using pip directly since we're in a Docker container and don't necessarily need poetry's env management
 RUN pip install --no-cache-dir .
 
 # Copy the rest of the application
 COPY . .
 
 # Expose the service port
-EXPOSE 8300
+EXPOSE 8400
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8300/health || exit 1
+    CMD curl -f http://localhost:8400/health || exit 1
 
 # Command to run the application
 CMD ["python", "-m", "app.run"]

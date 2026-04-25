@@ -8,7 +8,6 @@ from typing import Optional
 
 class ObservationStoreError(Exception):
     """Base exception for observation store errors."""
-
     pass
 
 
@@ -16,17 +15,7 @@ class ObservationStore:
     """Store layer for scene observations."""
 
     async def create(self, obs: ObservationCreate) -> int:
-        """Create a new scene observation.
-
-        Args:
-            obs: The observation to create.
-
-        Returns:
-            The ID of the created observation.
-
-        Raises:
-            ObservationStoreError: If the observation cannot be created.
-        """
+        """Create a new scene observation."""
         pool = db.get_pool()
         query = """
             INSERT INTO scene_observations (
@@ -35,58 +24,57 @@ class ObservationStore:
                 description_embedding, object_list, workflow_execution_id,
                 media_paths_json, embedding
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
         """
         try:
             objects_json = json.dumps(obs.objects_json) if obs.objects_json else None
             media_paths_json = json.dumps(obs.media_paths_json) if obs.media_paths_json else None
 
-            async with pool.acquire() as conn:
-                obs_id = await conn.fetchval(
-                    query,
-                    obs.sensor_id,
-                    obs.room_id,
-                    obs.room_name,
-                    obs.observed_at,
-                    obs.source,
-                    objects_json,
-                    obs.persons_count,
-                    obs.hazard_flags,
-                    obs.description,
-                    obs.description_embedding,
-                    obs.object_list,
-                    obs.workflow_execution_id,
-                    media_paths_json,
-                    obs.embedding,
-                )
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        query,
+                        (
+                            obs.sensor_id,
+                            obs.room_id,
+                            obs.room_name,
+                            obs.observed_at,
+                            obs.source,
+                            objects_json,
+                            obs.persons_count,
+                            obs.hazard_flags,
+                            obs.description,
+                            obs.description_embedding,
+                            obs.object_list,
+                            obs.workflow_execution_id,
+                            media_paths_json,
+                            obs.embedding,
+                        ),
+                    )
+                    row = await cur.fetchone()
 
-            if obs_id is None:
+            if row is None:
                 raise ObservationStoreError("Failed to create observation")
 
-            return obs_id
+            return row[0]
         except ObservationStoreError:
             raise
         except Exception as e:
             raise ObservationStoreError(f"Failed to create observation: {e}")
 
     async def get_by_id(self, obs_id: int) -> Optional[dict]:
-        """Retrieve an observation by ID.
-
-        Args:
-            obs_id: The observation ID.
-
-        Returns:
-            The observation as a dictionary, or None if not found.
-
-        Raises:
-            ObservationStoreError: If the database query fails.
-        """
+        """Retrieve an observation by ID."""
         pool = db.get_pool()
-        query = "SELECT * FROM scene_observations WHERE id = $1"
+        query = "SELECT * FROM scene_observations WHERE id = %s"
         try:
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow(query, obs_id)
-                return dict(row) if row else None
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query, (obs_id,))
+                    row = await cur.fetchone()
+                    if row is None:
+                        return None
+                    cols = [desc[0] for desc in cur.description]
+                    return dict(zip(cols, row))
         except Exception as e:
             raise ObservationStoreError(f"Failed to retrieve observation: {e}")

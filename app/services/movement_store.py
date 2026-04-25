@@ -7,7 +7,6 @@ from typing import List
 
 class MovementStoreError(Exception):
     """Base exception for movement store errors."""
-
     pass
 
 
@@ -15,17 +14,7 @@ class MovementStore:
     """Store layer for person movements."""
 
     async def create(self, movement: MovementCreate) -> int:
-        """Create a new movement record.
-
-        Args:
-            movement: The movement to create.
-
-        Returns:
-            The ID of the created movement.
-
-        Raises:
-            MovementStoreError: If the movement cannot be created.
-        """
+        """Create a new movement record."""
         pool = db.get_pool()
         query = """
             INSERT INTO person_movements (
@@ -33,31 +22,35 @@ class MovementStore:
                 from_room_name, to_room_name, direction_raw, direction_semantic,
                 confidence, observed_at, observation_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
         """
         try:
-            async with pool.acquire() as conn:
-                movement_id = await conn.fetchval(
-                    query,
-                    movement.person_id,
-                    movement.person_name,
-                    movement.sensor_id,
-                    movement.from_room_id,
-                    movement.to_room_id,
-                    movement.from_room_name,
-                    movement.to_room_name,
-                    movement.direction_raw,
-                    movement.direction_semantic,
-                    movement.confidence,
-                    movement.observed_at,
-                    movement.observation_id,
-                )
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        query,
+                        (
+                            movement.person_id,
+                            movement.person_name,
+                            movement.sensor_id,
+                            movement.from_room_id,
+                            movement.to_room_id,
+                            movement.from_room_name,
+                            movement.to_room_name,
+                            movement.direction_raw,
+                            movement.direction_semantic,
+                            movement.confidence,
+                            movement.observed_at,
+                            movement.observation_id,
+                        ),
+                    )
+                    row = await cur.fetchone()
 
-            if movement_id is None:
+            if row is None:
                 raise MovementStoreError("Failed to create movement")
 
-            return movement_id
+            return row[0]
         except MovementStoreError:
             raise
         except Exception as e:
@@ -70,40 +63,24 @@ class MovementStore:
         to_room_id: str | None = None,
         since_minutes: int | None = None,
     ) -> List[MovementTransitionResponse]:
-        """Get movement transitions for a person.
-
-        Args:
-            person_id: The person's ID.
-            semantic: Optional semantic direction filter.
-            to_room_id: Optional target room ID filter.
-            since_minutes: Optional time window in minutes.
-
-        Returns:
-            List of movement transitions.
-
-        Raises:
-            MovementStoreError: If the query fails.
-        """
+        """Get movement transitions for a person."""
         pool = db.get_pool()
         params: list = [person_id]
-        param_idx = 2
 
         query = """
             SELECT person_id, person_name, direction_semantic, to_room_name,
                    confidence, observed_at
             FROM person_movements
-            WHERE person_id = $1
+            WHERE person_id = %s
         """
 
         if semantic:
-            query += f" AND direction_semantic = ${param_idx}"
+            query += " AND direction_semantic = %s"
             params.append(semantic)
-            param_idx += 1
 
         if to_room_id:
-            query += f" AND to_room_id = ${param_idx}"
+            query += " AND to_room_id = %s"
             params.append(to_room_id)
-            param_idx += 1
 
         if since_minutes:
             query += f" AND observed_at >= NOW() - INTERVAL '{since_minutes} minutes'"
@@ -111,18 +88,14 @@ class MovementStore:
         query += " ORDER BY observed_at DESC LIMIT 50"
 
         try:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(query, *params)
-                return [
-                    MovementTransitionResponse(
-                        person_id=r["person_id"],
-                        person_name=r["person_name"],
-                        direction_semantic=r["direction_semantic"],
-                        to_room_name=r["to_room_name"],
-                        confidence=r["confidence"],
-                        observed_at=r["observed_at"],
-                    )
-                    for r in rows
-                ]
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query, params)
+                    rows = await cur.fetchall()
+                    cols = [desc[0] for desc in cur.description]
+                    return [
+                        MovementTransitionResponse(**dict(zip(cols, row)))
+                        for row in rows
+                    ]
         except Exception as e:
             raise MovementStoreError(f"Failed to get transitions: {e}")

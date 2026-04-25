@@ -42,7 +42,7 @@ This microservice provides long-term temporal and semantic context for the Cogni
    ```bash
    docker-compose up --build
    ```
-   The API will be available at `http://localhost:8300`.
+   The API will be available at `http://localhost:8400`.
 
 3. **Run tests**:
    ```bash
@@ -58,7 +58,7 @@ This microservice provides long-term temporal and semantic context for the Cogni
 ## API Documentation
 
 Once the service is running, you can access the interactive Swagger documentation at:
-`http://localhost:8300/docs`
+`http://localhost:8400/docs`
 
 ## API Endpoints
 

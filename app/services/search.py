@@ -9,26 +9,13 @@ from typing import List
 
 class SearchServiceError(Exception):
     """Base exception for search service errors."""
-
     pass
 
 
 class SearchService:
-    """Service for searching observations with vector similarity.
-
-    Supports three search modes:
-    1. Image-only: query_embedding for visual similarity
-    2. Text-only: query_text for semantic description similarity
-    3. Hybrid: Both queries for combined visual + semantic search
-    """
+    """Service for searching observations with vector similarity."""
 
     def __init__(self, text_embedder: TextEmbedder | None = None):
-        """Initialize search service with optional text embedder.
-
-        Args:
-            text_embedder: Optional pre-initialized text embedder.
-                          If None, creates one from settings.
-        """
         self._text_embedder = text_embedder or build_text_embedder(
             enabled=settings.TEXT_EMBEDDING_ENABLED,
             model_name=settings.TEXT_EMBEDDING_MODEL,
@@ -39,135 +26,109 @@ class SearchService:
         self,
         search_req: ObservationSearchRequest,
     ) -> List[ObservationSearchResult]:
-        """Search observations using vector similarity and filters.
-
-        Supports text-only, image-only, or hybrid search:
-        - Text-only: Uses description_embedding with HNSW index
-        - Image-only: Uses embedding (CLIP) with HNSW index
-        - Hybrid: Combines both similarity scores
-
-        Args:
-            search_req: The search request with query, filters, and parameters.
-
-        Returns:
-            List of matching observations with similarity scores.
-
-        Raises:
-            SearchServiceError: If the search fails.
-        """
+        """Search observations using vector similarity and filters."""
         pool = db.get_pool()
-
-        # Build SELECT clause with similarity columns
-        select_clauses = [
-            "SELECT id, observed_at, room_name, description, hazard_flags, object_list"
-        ]
-        similarity_columns = []
 
         has_image_query = bool(search_req.query_embedding)
         has_text_query = bool(search_req.query_text and self._text_embedder.is_available)
 
-        if has_image_query:
-            similarity_columns.append("embedding <=> $1 AS image_similarity")
-
+        # Resolve text embedding early so we know if it's actually available
+        query_text_embedding = None
         if has_text_query:
-            similarity_columns.append("description_embedding <=> $1 AS text_similarity")
+            query_text_embedding = self._text_embedder.embed(search_req.query_text or "")
+            has_text_query = bool(query_text_embedding)
 
+        # Build SELECT
+        similarity_columns = []
+        if has_image_query:
+            similarity_columns.append("embedding <=> %s AS image_similarity")
+        if has_text_query:
+            similarity_columns.append("description_embedding <=> %s AS text_similarity")
+
+        select_part = "SELECT id, observed_at, room_name, description, hazard_flags, object_list"
         if similarity_columns:
-            select_clauses.append(", ".join(similarity_columns))
+            select_part += ", " + ", ".join(similarity_columns)
 
-        # Build FROM and WHERE clauses
-        query_parts = ["FROM scene_observations WHERE 1=1"]
+        # Build WHERE + params
+        where_clauses = ["1=1"]
         params: list = []
-        param_idx = 1
 
-        # Apply filters
+        # Similarity columns come first in params (they appear in SELECT)
+        if has_image_query:
+            params.append(search_req.query_embedding)
+        if has_text_query:
+            params.append(query_text_embedding)
+
         if search_req.room_id:
+            where_clauses.append("room_id = %s")
             params.append(search_req.room_id)
-            query_parts.append(f"AND room_id = ${param_idx}")
-            param_idx += 1
 
         if search_req.since_minutes:
-            query_parts.append(
-                f"AND observed_at >= NOW() - INTERVAL '{search_req.since_minutes} minutes'"
+            where_clauses.append(
+                f"observed_at >= NOW() - INTERVAL '{search_req.since_minutes} minutes'"
             )
 
         if search_req.objects_any:
+            where_clauses.append("object_list && %s")
             params.append(search_req.objects_any)
-            query_parts.append(f"AND object_list && ${param_idx}")
-            param_idx += 1
 
         if search_req.hazard_flags_any:
+            where_clauses.append("hazard_flags && %s")
             params.append(search_req.hazard_flags_any)
-            query_parts.append(f"AND hazard_flags && ${param_idx}")
-            param_idx += 1
 
-        # Add similarity thresholds
         if has_image_query:
+            where_clauses.append("embedding <=> %s <= (1 - %s)")
             params.append(search_req.query_embedding)
             params.append(search_req.similarity_threshold)
-            query_parts.append(
-                f"AND embedding <=> ${param_idx - 1} <= (1 - ${param_idx})"
-            )
 
         if has_text_query:
-            # Generate text embedding for query
-            query_text_embedding = self._text_embedder.embed(search_req.query_text or "")
-            if query_text_embedding:
-                params.append(query_text_embedding)
-                params.append(search_req.similarity_threshold)
-                query_parts.append(
-                    f"AND description_embedding <=> ${param_idx - 1} <= (1 - ${param_idx})"
-                )
+            where_clauses.append("description_embedding <=> %s <= (1 - %s)")
+            params.append(query_text_embedding)
+            params.append(search_req.similarity_threshold)
 
-        # Build ORDER BY and LIMIT
-        # Prioritize by available similarity scores (hybrid ranking)
+        # ORDER BY
         if has_image_query and has_text_query:
-            # Hybrid ranking: average of normalized similarities
-            query_parts.append(
-                "ORDER BY (image_similarity + text_similarity) / 2 DESC"
-            )
+            order_part = "ORDER BY (image_similarity + text_similarity) / 2 DESC"
         elif has_image_query:
-            query_parts.append("ORDER BY image_similarity DESC")
+            order_part = "ORDER BY image_similarity DESC"
         elif has_text_query:
-            query_parts.append("ORDER BY text_similarity DESC")
+            order_part = "ORDER BY text_similarity DESC"
         else:
-            # No similarity search, just filters
-            query_parts.append("ORDER BY observed_at DESC")
+            order_part = "ORDER BY observed_at DESC"
 
-        # Add LIMIT
         params.append(search_req.limit)
-        limit_param = param_idx
-        if has_image_query or has_text_query:
-            # Count parameters added for similarity
-            param_count = 2 if (has_image_query and has_text_query) else 2
-            limit_param = param_idx + param_count - 1
-        query_parts.append(f"LIMIT ${limit_param}")
-
-        query = " ".join(select_clauses + query_parts)
+        query = (
+            f"{select_part} FROM scene_observations "
+            f"WHERE {' AND '.join(where_clauses)} "
+            f"{order_part} LIMIT %s"
+        )
 
         try:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(query, *params)
-                results = []
-                for r in rows:
-                    result_dict = {
-                        "id": r["id"],
-                        "observed_at": r["observed_at"],
-                        "room_name": r["room_name"],
-                        "description": r["description"],
-                        "hazard_flags": r["hazard_flags"] or [],
-                        "object_list": r["object_list"] or [],
-                    }
-                    # Add similarity scores if present
-                    if has_image_query:
-                        result_dict["image_similarity"] = (
-                            float(r["image_similarity"]) if r["image_similarity"] else None
-                        )
-                    if has_text_query:
-                        result_dict["text_similarity"] = (
-                            float(r["text_similarity"]) if r["text_similarity"] else None
-                        )
-                    results.append(ObservationSearchResult(**result_dict))
-                return results
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query, params)
+                    rows = await cur.fetchall()
+                    cols = [desc[0] for desc in cur.description]
+                    results = []
+                    for row in rows:
+                        r = dict(zip(cols, row))
+                        result_dict = {
+                            "id": r["id"],
+                            "observed_at": r["observed_at"],
+                            "room_name": r["room_name"],
+                            "description": r["description"],
+                            "hazard_flags": r["hazard_flags"] or [],
+                            "object_list": r["object_list"] or [],
+                        }
+                        if has_image_query:
+                            result_dict["image_similarity"] = (
+                                float(r["image_similarity"]) if r.get("image_similarity") else None
+                            )
+                        if has_text_query:
+                            result_dict["text_similarity"] = (
+                                float(r["text_similarity"]) if r.get("text_similarity") else None
+                            )
+                        results.append(ObservationSearchResult(**result_dict))
+                    return results
         except Exception as e:
             raise SearchServiceError(f"Search failed: {e}")

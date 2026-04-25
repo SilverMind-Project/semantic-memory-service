@@ -12,7 +12,7 @@ async def main() -> None:
         config = uvicorn.Config(
             app=app,
             host="0.0.0.0",
-            port=8300,
+            port=8400,
             lifespan="on",
         )
         server = uvicorn.Server(config)
