@@ -3,7 +3,9 @@
 # PostgreSQL is provided by the shared ../docker-compose.db.yml (included below).
 
 include:
-  - ../docker-compose.db.yml
+  - path: ../db/docker-compose.db.yml
+    env_file:
+      - ../db/.env
 
 services:
   semantic-memory-service:
