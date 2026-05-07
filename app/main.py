@@ -10,6 +10,7 @@ from app.routers import observations  # noqa: E402
 
 from app.config.config import settings
 from app.db.connection import db
+from app.db.migrate import run_migrations
 from app.services.observation_store import ObservationStoreError
 from app.services.movement_store import MovementStoreError
 from app.services.search import SearchServiceError
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting semantic memory service")
     await db.connect()
+    await run_migrations()
     logger.info("Database connection established")
     yield
     logger.info("Shutting down semantic memory service")

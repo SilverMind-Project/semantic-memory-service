@@ -1,32 +1,22 @@
-version: '3.8'
+# Semantic Memory Service — Docker Compose
+#
+# PostgreSQL is provided by the shared ../docker-compose.db.yml (included below).
+
+include:
+  - ../docker-compose.db.yml
 
 services:
-  semantic-memory-db:
-    image: pgvector/pgvector:pg17-trixie
-    container_name: semantic-memory-db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: semantic_memory
-    ports:
-      - "5442:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d semantic_memory"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   semantic-memory-service:
     build: .
     container_name: semantic-memory-service
+    networks:
+      - nanai
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@semantic-memory-db:5432/semantic_memory
+      DATABASE_URL: postgresql://${SMS_DB_USER:-sms_user}:${SMS_DB_PASSWORD:?err}@postgres:5432/semantic_memory
     ports:
       - "8400:8400"
     depends_on:
-      semantic-memory-db:
+      postgres:
         condition: service_healthy
     restart: always
     healthcheck:
@@ -36,5 +26,7 @@ services:
       retries: 3
       start_period: 15s
 
-volumes:
-  pgdata:
+networks:
+  nanai:
+    name: nanai
+    external: true

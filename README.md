@@ -1,6 +1,6 @@
 # Semantic Memory Service
 
-This microservice provides long-term temporal and semantic context for the Cognitive Companion system. It uses PostgreSQL with `pgvector` to store and query high-dimensional CLIP embeddings, structured scene observations, and person movement transitions.
+This microservice provides long-term temporal and semantic context for the Cognitive Companion system. It uses PostgreSQL 18 with `pgvectorscale` (StreamingDiskANN) for high-performance vector similarity search over CLIP embeddings, structured scene observations, and person movement transitions.
 
 ## Features
 
@@ -16,7 +16,8 @@ This microservice provides long-term temporal and semantic context for the Cogni
 - **Language**: Python 3.12+
 - **Package Manager**: [uv](https://github.com/astral-sh/uv)
 - **Framework**: FastAPI
-- **Database**: PostgreSQL + [pgvector](https://github.com/pgvector/pgvector)
+- **Database**: PostgreSQL 18 + [pgvectorscale](https://github.com/timescale/pgvectorscale) (StreamingDiskANN indexes)
+- **Migrations**: [Alembic](https://alembic.sqlalchemy.org/) with async psycopg3
 - **Linting/Formatting**: [Ruff](https://github.com/astral-sh/ruff)
 - **Static Analysis**: [Mypy](https://mypy-lang.org/)
 - **Testing**: Pytest
@@ -29,7 +30,7 @@ This microservice provides long-term temporal and semantic context for the Cogni
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv)
 - Docker & Docker Compose
-- PostgreSQL 15+ with `pgvector` extension enabled
+- PostgreSQL 18 (shared `timescale/timescaledb-ha:pg18` instance with pgvectorscale)
 
 ### Local Development
 
@@ -40,7 +41,8 @@ This microservice provides long-term temporal and semantic context for the Cogni
 
 2. **Run with Docker Compose**:
    ```bash
-   docker-compose up --build
+   # PostgreSQL is provided by ../docker-compose.db.yml (included automatically)
+   docker compose up --build
    ```
    The API will be available at `http://localhost:8400`.
 
@@ -125,12 +127,13 @@ The service follows a layered architecture:
 1. **API Layer (Routers)**: Defines RESTful endpoints with request validation and error handling.
 2. **Service Layer (Stores/Services)**: Implements business logic and database operations.
 3. **Data Access Layer (Connection)**: Manages PostgreSQL connection pooling via `asyncpg`.
-4. **Persistence Layer (PostgreSQL)**: Stores all structured and vector data using `pgvector`.
+4. **Persistence Layer (PostgreSQL)**: Stores all structured and vector data using `pgvectorscale` (StreamingDiskANN indexes) and `pgvector`.
 
 ### Lifecycle Management
 
 The application uses FastAPI's lifespan context manager to handle:
 - Database connection initialization on startup
+- Automatic Alembic migration on startup
 - Graceful shutdown with connection cleanup
 
 ### Configuration
@@ -144,7 +147,25 @@ Configuration is managed via [pydantic-settings](https://docs.pydantic.dev/dev-v
 - `TEXT_EMBEDDING_MODEL`: Sentence-transformers model ID (default: `sentence-transformers/all-MiniLM-L6-v2`)
 - `TEXT_EMBEDDING_ENABLED`: Enable text embedding fallback (default: `true`)
 
-## Database Schema
+## Database Migrations
+
+Database schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/). Migrations run automatically on application startup using Alembic's programmatic API.
+
+### Creating a new migration
+
+```bash
+uv run alembic revision -m "description of the change"
+```
+
+This generates a new file in `app/db/alembic/versions/`. Fill in the `upgrade()` and `downgrade()` methods using `op.execute()` for raw SQL.
+
+To apply migrations manually (e.g., before starting the app):
+
+```bash
+uv run alembic upgrade head
+```
+
+### Schema
 
 The service uses the following tables:
 

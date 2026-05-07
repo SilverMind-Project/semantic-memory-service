@@ -1,0 +1,127 @@
+"""initial schema
+
+Revision ID: 0610b1b70adf
+Revises:
+Create Date: 2026-05-07 11:32:17.503917
+"""
+from typing import Sequence, Union
+from alembic import op
+
+
+revision: str = '0610b1b70adf'
+down_revision: Union[str, None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.execute("""
+        CREATE TABLE scene_observations (
+            id              BIGSERIAL PRIMARY KEY,
+            sensor_id       TEXT NOT NULL,
+            room_id         TEXT,
+            room_name       TEXT,
+            observed_at     TIMESTAMPTZ NOT NULL,
+            source          TEXT NOT NULL,
+
+            objects_json    JSONB,
+            persons_count   INT,
+            hazard_flags    TEXT[],
+            description     TEXT,
+            object_list     TEXT[],
+
+            workflow_execution_id  BIGINT,
+            media_paths_json       JSONB,
+
+            embedding       vector(768),
+
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_sensor_time
+            ON scene_observations (sensor_id, observed_at DESC);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_room_time
+            ON scene_observations (room_id, observed_at DESC);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_hazards
+            ON scene_observations USING GIN (hazard_flags);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_objects
+            ON scene_observations USING GIN (object_list);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_embedding
+            ON scene_observations USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64);
+    """)
+
+    op.execute("""
+        CREATE TABLE person_movements (
+            id              BIGSERIAL PRIMARY KEY,
+            person_id       TEXT NOT NULL,
+            person_name     TEXT,
+
+            sensor_id       TEXT NOT NULL,
+            from_room_id    TEXT,
+            to_room_id      TEXT,
+            from_room_name  TEXT,
+            to_room_name    TEXT,
+
+            direction_raw   TEXT,
+            direction_semantic TEXT,
+
+            confidence      FLOAT,
+            observed_at     TIMESTAMPTZ NOT NULL,
+            observation_id  BIGINT REFERENCES scene_observations(id),
+
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+    op.execute("""
+        CREATE INDEX idx_person_movements_person_time
+            ON person_movements (person_id, observed_at DESC);
+    """)
+    op.execute("""
+        CREATE INDEX idx_person_movements_room_time
+            ON person_movements (to_room_id, observed_at DESC);
+    """)
+
+    op.execute("""
+        CREATE MATERIALIZED VIEW person_current_location AS
+        SELECT DISTINCT ON (person_id)
+            person_id, person_name, to_room_id AS room_id, to_room_name AS room_name,
+            direction_semantic, confidence, observed_at
+        FROM person_movements
+        WHERE to_room_id IS NOT NULL
+        ORDER BY person_id, observed_at DESC;
+    """)
+    op.execute("""
+        CREATE UNIQUE INDEX ON person_current_location (person_id);
+    """)
+
+    op.execute("""
+        CREATE TABLE object_presence (
+            id              BIGINT PRIMARY KEY,
+            room_id         TEXT NOT NULL,
+            object_label    TEXT NOT NULL,
+            first_seen_at   TIMESTAMPTZ NOT NULL,
+            last_seen_at    TIMESTAMPTZ NOT NULL,
+            observation_count INT DEFAULT 1,
+            last_observation_id BIGINT REFERENCES scene_observations(id)
+        );
+    """)
+    op.execute("""
+        CREATE UNIQUE INDEX ON object_presence (room_id, object_label);
+    """)
+
+
+def downgrade() -> None:
+    op.execute("DROP MATERIALIZED VIEW IF EXISTS person_current_location CASCADE;")
+    op.execute("DROP TABLE IF EXISTS object_presence CASCADE;")
+    op.execute("DROP TABLE IF EXISTS person_movements CASCADE;")
+    op.execute("DROP TABLE IF EXISTS scene_observations CASCADE;")

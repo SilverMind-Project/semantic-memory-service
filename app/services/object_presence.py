@@ -21,11 +21,10 @@ class ObjectPresenceStore:
         pool = db.get_pool()
         query = """
             INSERT INTO object_presence (
-                id, room_id, object_label, first_seen_at, last_seen_at,
+                room_id, object_label, first_seen_at, last_seen_at,
                 observation_count, last_observation_id
             )
             VALUES (
-                (SELECT COALESCE(MAX(id), 0) + 1 FROM object_presence),
                 %s, %s, NOW(), NOW(), 1, %s
             )
             ON CONFLICT (room_id, object_label)
