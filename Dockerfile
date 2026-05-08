@@ -21,6 +21,10 @@ COPY . .
 # Expose the service port
 EXPOSE 8400
 
+# Download embedding model tokenizer (needed by triton-shared TextEmbedder)
+RUN mkdir -p /models/embeddinggemma-300m/1 && \
+    python -c "from urllib.request import urlretrieve; urlretrieve('https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/tokenizer.json', '/models/embeddinggemma-300m/1/tokenizer.json')"
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8400/health || exit 1
 
