@@ -1,15 +1,60 @@
-"""Tests for search and text embedder services."""
+"""Tests for services: text embedder, search, observation store, movement store, object presence."""
+
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
-import math
-from unittest.mock import MagicMock, patch, AsyncMock
+
+from app.models.schemas import (
+    ObservationCreate,
+    ObservationSearchRequest,
+    MovementCreate,
+)
 from app.services.search import SearchService, SearchServiceError
+from app.services.observation_store import ObservationStore, ObservationStoreError
+from app.services.movement_store import MovementStore, MovementStoreError
+from app.services.object_presence import ObjectPresenceStore, ObjectPresenceStoreError
 from app.services.text_embedder import (
     NullTextEmbedder,
-    SentenceTransformerEmbedder,
+    TritonTextEmbedder,
     build_text_embedder,
 )
-from app.models.schemas import ObservationSearchRequest
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def _make_mock_cursor(return_value=None, fetchall_return=None, fetchone_return=None,
+                      description=None):
+    """Build a mock async cursor with execute, fetch, fetchone, fetchall."""
+    cur = MagicMock()
+    cur.__aenter__ = AsyncMock(return_value=cur)
+    cur.__aexit__ = AsyncMock(return_value=False)
+    cur.execute = AsyncMock(return_value=None)
+    cur.fetchone = AsyncMock(return_value=fetchone_return)
+    cur.fetchall = AsyncMock(return_value=fetchall_return or [])
+    cur.fetch = AsyncMock(return_value=return_value or [])
+    cur.description = description or []
+    return cur
+
+
+def _make_mock_conn(cursor):
+    """Build a mock connection whose .cursor() yields the given cursor."""
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=cursor)
+    conn.__aenter__ = AsyncMock(return_value=conn)
+    conn.__aexit__ = AsyncMock(return_value=False)
+    return conn
+
+
+def _mock_db_pool(monkeypatch, cursor):
+    """Patch db.get_pool so pool.connection() → conn → conn.cursor() → cursor."""
+    conn = _make_mock_conn(cursor)
+    mock_pool = MagicMock()
+    mock_pool.connection = MagicMock(return_value=conn)
+    monkeypatch.setattr("app.db.connection.db.get_pool", lambda: mock_pool)
+    return mock_pool
 
 
 # =============================================================================
@@ -17,78 +62,50 @@ from app.models.schemas import ObservationSearchRequest
 # =============================================================================
 
 class TestNullTextEmbedder:
-    """Tests for NullTextEmbedder (graceful degradation)."""
-
-    def test_embed_returns_empty_list(self):
-        """Empty text should return empty embedding."""
+    @pytest.mark.asyncio
+    async def test_embed_returns_empty_list_for_any_input(self):
         embedder = NullTextEmbedder()
-        assert embedder.embed("") == []
-        assert embedder.embed("   ") == []
-        assert embedder.embed(None) == []  # type: ignore
-
-    def test_embed_returns_empty_list_for_any_input(self):
-        """Any input should return empty embedding."""
-        embedder = NullTextEmbedder()
-        assert embedder.embed("any text") == []
+        assert await embedder.embed("") == []
+        assert await embedder.embed("   ") == []
+        assert await embedder.embed("any text") == []
 
     def test_is_available_false(self):
-        """Null embedder should report as unavailable."""
         assert NullTextEmbedder().is_available is False
 
     def test_embedding_dim_zero(self):
-        """Null embedder should report zero dimension."""
         assert NullTextEmbedder().embedding_dim == 0
 
 
 # =============================================================================
-# SentenceTransformerEmbedder Tests
+# TritonTextEmbedder Tests
 # =============================================================================
 
-class TestSentenceTransformerEmbedder:
-    """Tests for SentenceTransformerEmbedder."""
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
-    def test_embed_returns_correct_dimension(self):
-        """Embedding should be 384 dimensions for all-MiniLM-L6-v2."""
-        embedder = SentenceTransformerEmbedder()
-        embedding = embedder.embed("test sentence")
-        assert len(embedding) == 384
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
-    def test_embed_normalizes_vectors(self):
-        """Embeddings should be L2-normalized for cosine similarity."""
-        embedder = SentenceTransformerEmbedder()
-        embedding = embedder.embed("test sentence")
-        # L2 norm should be ~1.0
-        norm = math.sqrt(sum(x * x for x in embedding))
-        assert abs(norm - 1.0) < 1e-5
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
-    def test_embed_deterministic(self):
-        """Same input should produce same embedding."""
-        embedder = SentenceTransformerEmbedder()
-        embedding1 = embedder.embed("hello world")
-        embedding2 = embedder.embed("hello world")
-        assert embedding1 == embedding2
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
-    def test_embed_different_inputs_different_vectors(self):
-        """Different inputs should produce different embeddings."""
-        embedder = SentenceTransformerEmbedder()
-        embedding1 = embedder.embed("hello world")
-        embedding2 = embedder.embed("goodbye world")
-        assert embedding1 != embedding2
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
-    def test_is_available_true(self):
-        """Loaded embedder should report as available."""
-        assert SentenceTransformerEmbedder().is_available is True
-
-    @pytest.mark.skip(reason="Requires sentence-transformers and torch installation")
+class TestTritonTextEmbedder:
     def test_embedding_dim_property(self):
-        """Embedding dimension property should match actual output."""
-        embedder = SentenceTransformerEmbedder()
-        assert embedder.embedding_dim == 384
+        embedder = TritonTextEmbedder(
+            triton_url="localhost:8701",
+            model_name="embeddinggemma-300m",
+            tokenizer_path="/tmp/tokenizer.json",
+        )
+        assert embedder.embedding_dim == 768
+
+    def test_is_available_true(self):
+        embedder = TritonTextEmbedder(
+            triton_url="localhost:8701",
+            model_name="embeddinggemma-300m",
+            tokenizer_path="/tmp/tokenizer.json",
+        )
+        assert embedder.is_available is True
+
+    @pytest.mark.asyncio
+    async def test_embed_empty_text_returns_empty_list(self):
+        embedder = TritonTextEmbedder(
+            triton_url="localhost:8701",
+            model_name="embeddinggemma-300m",
+            tokenizer_path="/tmp/tokenizer.json",
+        )
+        assert await embedder.embed("") == []
+        assert await embedder.embed("   ") == []
 
 
 # =============================================================================
@@ -96,36 +113,24 @@ class TestSentenceTransformerEmbedder:
 # =============================================================================
 
 class TestBuildTextEmbedder:
-    """Tests for build_text_embedder factory function."""
-
     def test_disabled_returns_null_embedder(self):
-        """Disabled embedding should return NullTextEmbedder."""
         embedder = build_text_embedder(
             enabled=False,
-            model_name="all-MiniLM-L6-v2",
-            device="cpu",
+            triton_url="localhost:8701",
+            model_name="embeddinggemma-300m",
+            tokenizer_path="/tmp/tokenizer.json",
         )
         assert isinstance(embedder, NullTextEmbedder)
 
-    def test_enabled_returns_sentence_transformer_if_available(self):
-        """Enabled embedding should return SentenceTransformerEmbedder if available."""
-        # This test passes if we can import sentence-transformers
-        try:
-            from sentence_transformers import SentenceTransformer  # noqa: F401
-            embedder = build_text_embedder(
-                enabled=True,
-                model_name="all-MiniLM-L6-v2",
-                device="cpu",
-            )
-            assert isinstance(embedder, SentenceTransformerEmbedder)
-        except ImportError:
-            # If not installed, should fall back to null embedder
-            embedder = build_text_embedder(
-                enabled=True,
-                model_name="all-MiniLM-L6-v2",
-                device="cpu",
-            )
-            assert isinstance(embedder, NullTextEmbedder)
+    def test_enabled_returns_triton_embedder(self):
+        embedder = build_text_embedder(
+            enabled=True,
+            triton_url="localhost:8701",
+            model_name="embeddinggemma-300m",
+            tokenizer_path="/tmp/tokenizer.json",
+        )
+        assert isinstance(embedder, TritonTextEmbedder)
+        assert embedder.embedding_dim == 768
 
 
 # =============================================================================
@@ -133,283 +138,336 @@ class TestBuildTextEmbedder:
 # =============================================================================
 
 class TestSearchService:
-    """Tests for SearchService with text embedding support."""
 
     @pytest.mark.asyncio
-    async def test_search_with_filters_only(self):
-        """Search with filters but no query should work."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
+    async def test_search_with_filters_only(self, monkeypatch):
+        cursor = _make_mock_cursor(
+            fetchall_return=[(
+                1, "2026-04-14T00:00:00Z", "room_1", "living_room",
+                "A person is sitting on the sofa", ["none"], ["person", "sofa"],
+            )],
+            description=[
+                ("id",), ("observed_at",), ("room_id",), ("room_name",),
+                ("description",), ("hazard_flags",), ("object_list",),
+            ],
+        )
+        _mock_db_pool(monkeypatch, cursor)
 
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
+        service = SearchService()
+        results = await service.search_observations(
+            ObservationSearchRequest(room_id="room_1", limit=10)
+        )
 
-        mock_conn.fetch = AsyncMock(return_value=[{
-            'id': 1,
-            'observed_at': '2026-04-14T00:00:00Z',
-            'room_name': 'living_room',
-            'description': 'A person is sitting on the sofa',
-            'hazard_flags': ['none'],
-            'object_list': ['person', 'sofa'],
-        }])
+        assert len(results) == 1
+        assert results[0].room_name == "living_room"
+        assert results[0].text_similarity is None
+        assert results[0].image_similarity is None
 
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                room_id="room_1",
-                limit=10,
+    @pytest.mark.asyncio
+    async def test_search_with_room_id_filter(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(room_id="kitchen", limit=5)
+        )
+        assert cursor.execute.called
+
+    @pytest.mark.asyncio
+    async def test_search_with_objects_filter(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(objects_any=["person", "chair"], limit=10)
+        )
+        assert cursor.execute.called
+
+    @pytest.mark.asyncio
+    async def test_search_with_hazard_flags_filter(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(hazard_flags_any=["fire", "smoke"], limit=10)
+        )
+        assert cursor.execute.called
+
+    @pytest.mark.asyncio
+    async def test_search_with_since_minutes_filter(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(since_minutes=30, limit=10)
+        )
+        assert cursor.execute.called
+
+    @pytest.mark.asyncio
+    async def test_search_text_only_with_null_embedder(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService(text_embedder=NullTextEmbedder())
+        results = await service.search_observations(
+            ObservationSearchRequest(query_text="person cooking", limit=10)
+        )
+        assert isinstance(results, list)
+
+    @pytest.mark.asyncio
+    async def test_search_result_includes_similarity_scores(self, monkeypatch):
+        cursor = _make_mock_cursor(
+            fetchall_return=[(
+                1, "2026-04-14T00:00:00Z", "room_1", "kitchen", "Person cooking",
+                [], ["person", "stove"], 0.85,
+            )],
+            description=[
+                ("id",), ("observed_at",), ("room_id",), ("room_name",),
+                ("description",), ("hazard_flags",), ("object_list",),
+                ("image_similarity",),
+            ],
+        )
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        results = await service.search_observations(
+            ObservationSearchRequest(query_embedding=[0.1] * 768, limit=10)
+        )
+
+        assert len(results) == 1
+        assert results[0].image_similarity == 0.85
+        assert results[0].text_similarity is None
+
+    @pytest.mark.asyncio
+    async def test_search_with_text_query_and_null_embedder(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService(text_embedder=NullTextEmbedder())
+        results = await service.search_observations(
+            ObservationSearchRequest(
+                query_text="person in kitchen", room_id="kitchen", limit=10
             )
-
-            results = await service.search_observations(search_req)
-
-            assert len(results) == 1
-            assert results[0].room_name == 'living_room'
-            assert results[0].text_similarity is None
-            assert results[0].image_similarity is None
+        )
+        assert isinstance(results, list)
 
     @pytest.mark.asyncio
-    async def test_search_with_room_id_filter(self):
-        """Search should filter by room_id."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
+    async def test_search_combined_filters(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
 
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                room_id="kitchen",
-                limit=5,
-            )
-
-            await service.search_observations(search_req)
-
-            # Verify query was called
-            assert mock_conn.fetch.called
-
-    @pytest.mark.asyncio
-    async def test_search_with_objects_filter(self):
-        """Search should filter by objects_any."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                objects_any=["person", "chair"],
-                limit=10,
-            )
-
-            await service.search_observations(search_req)
-
-            assert mock_conn.fetch.called
-
-    @pytest.mark.asyncio
-    async def test_search_with_hazard_flags_filter(self):
-        """Search should filter by hazard_flags_any."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                hazard_flags_any=["fire", "smoke"],
-                limit=10,
-            )
-
-            await service.search_observations(search_req)
-
-            assert mock_conn.fetch.called
-
-    @pytest.mark.asyncio
-    async def test_search_with_since_minutes_filter(self):
-        """Search should filter by time."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                since_minutes=30,
-                limit=10,
-            )
-
-            await service.search_observations(search_req)
-
-            assert mock_conn.fetch.called
-
-    @pytest.mark.asyncio
-    async def test_search_text_only_with_null_embedder(self):
-        """Text search with null embedder should return empty results."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            # Create service with null embedder
-            service = SearchService(text_embedder=NullTextEmbedder())
-            search_req = ObservationSearchRequest(
-                query_text="person cooking",
-                limit=10,
-            )
-
-            results = await service.search_observations(search_req)
-
-            # Should not raise, just return empty results
-            assert isinstance(results, list)
-
-    @pytest.mark.asyncio
-    async def test_search_result_includes_similarity_scores(self):
-        """Search results should include similarity scores when available."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        # Mock row with similarity scores
-        mock_conn.fetch = AsyncMock(return_value=[{
-            'id': 1,
-            'observed_at': '2026-04-14T00:00:00Z',
-            'room_name': 'kitchen',
-            'description': 'Person cooking',
-            'hazard_flags': [],
-            'object_list': ['person', 'stove'],
-            'image_similarity': 0.85,
-            'text_similarity': 0.72,
-        }])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
-                query_embedding=[0.1] * 768,  # CLIP embedding dimension
-                limit=10,
-            )
-
-            results = await service.search_observations(search_req)
-
-            assert len(results) == 1
-            assert results[0].image_similarity == 0.85
-            # text_similarity should be None since no text query
-            assert results[0].text_similarity is None
-
-    @pytest.mark.asyncio
-    async def test_search_error_handling(self):
-        """Search should handle database errors gracefully."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(side_effect=Exception("Database connection lost"))
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(limit=10)
-
-            with pytest.raises(SearchServiceError) as exc_info:
-                await service.search_observations(search_req)
-
-            assert "Search failed" in str(exc_info.value)
-
-
-# =============================================================================
-# Integration Tests
-# =============================================================================
-
-class TestTextEmbeddingIntegration:
-    """Integration tests for text embedding functionality."""
-
-    @pytest.mark.asyncio
-    async def test_search_with_text_query_and_null_embedder(self):
-        """Text search should gracefully handle unavailable embedder."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService(text_embedder=NullTextEmbedder())
-            search_req = ObservationSearchRequest(
-                query_text="person in kitchen",
-                room_id="kitchen",
-                limit=10,
-            )
-
-            # Should not raise even though text embedder is unavailable
-            results = await service.search_observations(search_req)
-
-            assert isinstance(results, list)
-            # Results should still be filtered by room_id
-
-    @pytest.mark.asyncio
-    async def test_search_combined_filters(self):
-        """Search should handle multiple filters simultaneously."""
-        mock_pool = MagicMock()
-        mock_conn = MagicMock()
-
-        async_mock = AsyncMock()
-        async_mock.__aenter__ = AsyncMock(return_value=mock_conn)
-        async_mock.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire = MagicMock(return_value=async_mock)
-
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        with patch("app.db.connection.db.get_pool", return_value=mock_pool):
-            service = SearchService()
-            search_req = ObservationSearchRequest(
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(
                 room_id="kitchen",
                 since_minutes=60,
                 objects_any=["person", "knife"],
                 hazard_flags_any=["weapon"],
                 limit=5,
             )
+        )
+        assert cursor.execute.called
 
-            await service.search_observations(search_req)
+    @pytest.mark.asyncio
+    async def test_search_error_handling(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=Exception("Database connection lost"))
+        _mock_db_pool(monkeypatch, cursor)
 
-            # Verify all filters were applied
-            assert mock_conn.fetch.called
+        service = SearchService()
+        with pytest.raises(SearchServiceError, match="Search failed"):
+            await service.search_observations(ObservationSearchRequest(limit=10))
+
+
+# =============================================================================
+# ObservationStore Tests
+# =============================================================================
+
+class TestObservationStore:
+
+    @pytest.mark.asyncio
+    async def test_create_returns_id_and_created_at(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=(42, datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObservationStore()
+        obs = ObservationCreate(
+            sensor_id="cam_1",
+            observed_at=datetime.now(timezone.utc),
+            source="scene_intel",
+        )
+        obs_id, created_at = await store.create(obs)
+        assert obs_id == 42
+        assert created_at.year == 2026 and created_at.month == 5 and created_at.day == 7
+
+    @pytest.mark.asyncio
+    async def test_create_raises_on_failure(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=None)
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObservationStore()
+        obs = ObservationCreate(
+            sensor_id="cam_1",
+            observed_at=datetime.now(timezone.utc),
+            source="scene_intel",
+        )
+        with pytest.raises(ObservationStoreError, match="Failed to create observation"):
+            await store.create(obs)
+
+    @pytest.mark.asyncio
+    async def test_create_raises_on_db_error(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=OSError("connection lost"))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObservationStore()
+        obs = ObservationCreate(
+            sensor_id="cam_1",
+            observed_at=datetime.now(timezone.utc),
+            source="scene_intel",
+        )
+        with pytest.raises(ObservationStoreError, match="Failed to create observation"):
+            await store.create(obs)
+
+
+# =============================================================================
+# MovementStore Tests
+# =============================================================================
+
+class TestMovementStore:
+
+    @pytest.mark.asyncio
+    async def test_create_returns_id_and_created_at(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=(7, datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = MovementStore()
+        m = MovementCreate(
+            person_id="p1",
+            sensor_id="s1",
+            direction_raw="left_to_right",
+            direction_semantic="entering",
+            confidence=0.9,
+            observed_at=datetime.now(timezone.utc),
+        )
+        m_id, created_at = await store.create(m)
+        assert m_id == 7
+        assert created_at.year == 2026 and created_at.month == 5 and created_at.day == 7
+
+    @pytest.mark.asyncio
+    async def test_create_raises_on_failure(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=None)
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = MovementStore()
+        m = MovementCreate(
+            person_id="p1",
+            sensor_id="s1",
+            direction_raw="left_to_right",
+            direction_semantic="entering",
+            confidence=0.9,
+            observed_at=datetime.now(timezone.utc),
+        )
+        with pytest.raises(MovementStoreError, match="Failed to create movement"):
+            await store.create(m)
+
+    @pytest.mark.asyncio
+    async def test_get_transitions(self, monkeypatch):
+        cursor = _make_mock_cursor(
+            fetchall_return=[(
+                1, "p1", "Alice", "living_room", "kitchen",
+                "Living Room", "Kitchen", "entering", 0.95,
+                datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc), None,
+            )],
+            description=[
+                ("id",), ("person_id",), ("person_name",), ("from_room_id",),
+                ("to_room_id",), ("from_room_name",), ("to_room_name",),
+                ("direction_semantic",), ("confidence",), ("observed_at",),
+                ("observation_id",),
+            ],
+        )
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = MovementStore()
+        results = await store.get_transitions("p1")
+        assert len(results) == 1
+        assert results[0].person_name == "Alice"
+        assert results[0].direction_semantic == "entering"
+
+    @pytest.mark.asyncio
+    async def test_get_transitions_with_filters(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchall_return=[])
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = MovementStore()
+        results = await store.get_transitions(
+            "p1", semantic="entering", to_room_id="kitchen", since_minutes=60
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_get_transitions_raises_on_db_error(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=OSError("connection lost"))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = MovementStore()
+        with pytest.raises(MovementStoreError, match="Failed to get transitions"):
+            await store.get_transitions("p1")
+
+
+# =============================================================================
+# ObjectPresenceStore Tests
+# =============================================================================
+
+class TestObjectPresenceStore:
+
+    @pytest.mark.asyncio
+    async def test_upsert_presence(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObjectPresenceStore()
+        await store.upsert_presence("room_1", "chair", 123)
+        assert cursor.execute.called
+
+    @pytest.mark.asyncio
+    async def test_get_by_room(self, monkeypatch):
+        cursor = _make_mock_cursor(
+            fetchall_return=[(
+                "chair", datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc), 5,
+            )],
+            description=[
+                ("object_label",), ("last_seen_at",), ("observation_count",),
+            ],
+        )
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObjectPresenceStore()
+        results = await store.get_by_room("room_1", 60)
+        assert len(results) == 1
+        assert results[0]["object_label"] == "chair"
+        assert results[0]["observation_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_delete_old_records(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchall_return=[(1,), (2,)])
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObjectPresenceStore()
+        deleted = await store.delete_old_records(90)
+        assert deleted == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_raises_on_db_error(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=OSError("connection lost"))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObjectPresenceStore()
+        with pytest.raises(ObjectPresenceStoreError, match="Failed to upsert presence"):
+            await store.upsert_presence("room_1", "chair", 123)

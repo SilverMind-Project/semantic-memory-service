@@ -1,20 +1,20 @@
 """Text embedding service for scene description semantic search.
 
-Uses sentence-transformers with all-MiniLM-L6-v2 model to generate
-384-dimensional text embeddings for semantic search of scene descriptions.
+Uses embeddinggemma-300m served by Triton Inference Server via the
+triton-shared library to generate 768-dimensional text embeddings.
 
 Design
 ------
-``TextEmbedder`` is the ABC. ``SentenceTransformerEmbedder`` wraps
-sentence-transformers. ``NullTextEmbedder`` returns an empty list and is
-used when text embedding is disabled or sentence-transformers is not installed.
+``TextEmbedder`` is the ABC. ``TritonTextEmbedder`` wraps
+triton-shared's TextEmbedder with lazy client initialization.
+``NullTextEmbedder`` returns an empty list and is used when text
+embedding is disabled.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class TextEmbedder(ABC):
     """Abstract text embedder."""
 
     @abstractmethod
-    def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Return a normalized embedding vector for *text*.
 
         Returns an empty list when the model is unavailable or text is empty.
@@ -46,7 +46,7 @@ class TextEmbedder(ABC):
 class NullTextEmbedder(TextEmbedder):
     """No-op embedder for graceful degradation."""
 
-    def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         return []
 
     @property
@@ -58,63 +58,60 @@ class NullTextEmbedder(TextEmbedder):
         return 0
 
 
-class SentenceTransformerEmbedder(TextEmbedder):
-    """Text embedder via sentence-transformers.
+class TritonTextEmbedder(TextEmbedder):
+    """Text embedder via Triton Inference Server.
 
-    Uses all-MiniLM-L6-v2 model which produces 384-dimensional
+    Uses embeddinggemma-300m which produces 768-dimensional
     L2-normalized embeddings suitable for cosine similarity search.
+    The Triton gRPC client is created lazily on first use.
 
     Args:
-        model_name: sentence-transformers model ID (default "all-MiniLM-L6-v2").
-        device: PyTorch device string (default "cpu").
+        triton_url: Triton gRPC endpoint (e.g. ``localhost:8701``).
+        model_name: Triton model name.
+        tokenizer_path: Path to the HuggingFace ``tokenizer.json`` file.
     """
 
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
-        device: str = "cpu",
+        triton_url: str,
+        model_name: str,
+        tokenizer_path: str,
     ) -> None:
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
-            import torch
-        except ImportError as exc:
-            raise RuntimeError(
-                "sentence-transformers and torch are required for "
-                "SentenceTransformerEmbedder. "
-                "Install with: pip install sentence-transformers torch"
-            ) from exc
+        self._triton_url = triton_url
+        self._model_name = model_name
+        self._tokenizer_path = tokenizer_path
+        self._embedder = None  # triton_shared.models.embedder.TextEmbedder
+        self._dim: int = 768  # embeddinggemma-300m output dimension
+
+    async def _ensure_client(self) -> None:
+        if self._embedder is not None:
+            return
+        from triton_shared.client.grpc import TritonGrpcClient
+        from triton_shared.models.embedder import TextEmbedder as _TritonEmbedder
 
         logger.info(
-            "loading_sentence_transformers model=%s device=%s",
-            model_name,
-            device,
+            "connecting to Triton url=%s model=%s",
+            self._triton_url,
+            self._model_name,
         )
-        self._device = device
-        self._model = SentenceTransformer(model_name, device=device)
-        self._torch = torch
-        self._dim: int = self._model.get_sentence_embedding_dimension()
-        logger.info(
-            "sentence_transformers_loaded model=%s dim=%d device=%s",
-            model_name,
-            self._dim,
-            device,
+        self._grpc_client = TritonGrpcClient(self._triton_url)
+        await self._grpc_client.__aenter__()
+        self._embedder = _TritonEmbedder(
+            client=self._grpc_client,
+            model_name=self._model_name,
+            tokenizer_path=self._tokenizer_path,
         )
+        logger.info("Triton text embedder ready dim=%d", self._dim)
 
-    def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Return an L2-normalized embedding for *text*.
 
         Returns an empty list if text is None or empty.
         """
         if not text or not text.strip():
             return []
-
-        embedding = self._model.encode(
-            [text],
-            normalize_embeddings=True,
-            convert_to_tensor=True,
-            show_progress_bar=False,
-        )
-        return embedding[0].cpu().float().tolist()
+        await self._ensure_client()
+        return await self._embedder.embed_query(text)
 
     @property
     def is_available(self) -> bool:
@@ -128,31 +125,27 @@ class SentenceTransformerEmbedder(TextEmbedder):
 def build_text_embedder(
     *,
     enabled: bool,
+    triton_url: str,
     model_name: str,
-    device: str,
+    tokenizer_path: str,
 ) -> TextEmbedder:
     """Construct a TextEmbedder from config values.
 
     Args:
         enabled: Whether text embedding is enabled.
-        model_name: sentence-transformers model ID.
-        device: PyTorch device string.
+        triton_url: Triton gRPC endpoint.
+        model_name: Triton model name.
+        tokenizer_path: Path to tokenizer.json.
 
     Returns:
-        A TextEmbedder instance (either SentenceTransformerEmbedder or NullTextEmbedder).
+        A TextEmbedder instance (either TritonTextEmbedder or NullTextEmbedder).
     """
     if not enabled:
         logger.info("text_embedding_disabled returning_null_embedder")
         return NullTextEmbedder()
 
-    try:
-        return SentenceTransformerEmbedder(
-            model_name=model_name,
-            device=device,
-        )
-    except RuntimeError as exc:
-        logger.warning(
-            "sentence_transformers_not_installed_or_failed: %s returning_null_embedder",
-            exc,
-        )
-        return NullTextEmbedder()
+    return TritonTextEmbedder(
+        triton_url=triton_url,
+        model_name=model_name,
+        tokenizer_path=tokenizer_path,
+    )

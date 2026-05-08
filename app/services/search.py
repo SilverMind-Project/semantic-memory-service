@@ -4,7 +4,6 @@ from app.config.config import settings
 from app.db.connection import db
 from app.models.schemas import ObservationSearchRequest, ObservationSearchResult
 from app.services.text_embedder import TextEmbedder, build_text_embedder
-from typing import List
 
 
 class SearchServiceError(Exception):
@@ -18,14 +17,15 @@ class SearchService:
     def __init__(self, text_embedder: TextEmbedder | None = None):
         self._text_embedder = text_embedder or build_text_embedder(
             enabled=settings.TEXT_EMBEDDING_ENABLED,
-            model_name=settings.TEXT_EMBEDDING_MODEL,
-            device="cpu",
+            triton_url=settings.TRITON_URL,
+            model_name=settings.TRITON_TEXT_EMBEDDING_MODEL,
+            tokenizer_path=settings.TRITON_TEXT_EMBEDDING_TOKENIZER_PATH,
         )
 
     async def search_observations(
         self,
         search_req: ObservationSearchRequest,
-    ) -> List[ObservationSearchResult]:
+    ) -> list[ObservationSearchResult]:
         """Search observations using vector similarity and filters."""
         pool = db.get_pool()
 
@@ -35,7 +35,7 @@ class SearchService:
         # Resolve text embedding early so we know if it's actually available
         query_text_embedding = None
         if has_text_query:
-            query_text_embedding = self._text_embedder.embed(search_req.query_text or "")
+            query_text_embedding = await self._text_embedder.embed(search_req.query_text or "")
             has_text_query = bool(query_text_embedding)
 
         # Build SELECT
@@ -45,7 +45,7 @@ class SearchService:
         if has_text_query:
             similarity_columns.append("description_embedding <=> %s AS text_similarity")
 
-        select_part = "SELECT id, observed_at, room_name, description, hazard_flags, object_list"
+        select_part = "SELECT id, observed_at, room_id, room_name, description, hazard_flags, object_list"
         if similarity_columns:
             select_part += ", " + ", ".join(similarity_columns)
 
@@ -64,9 +64,8 @@ class SearchService:
             params.append(search_req.room_id)
 
         if search_req.since_minutes:
-            where_clauses.append(
-                f"observed_at >= NOW() - INTERVAL '{search_req.since_minutes} minutes'"
-            )
+            where_clauses.append("observed_at >= NOW() - INTERVAL '1 minute' * %s")
+            params.append(search_req.since_minutes)
 
         if search_req.objects_any:
             where_clauses.append("object_list && %s")
@@ -108,17 +107,18 @@ class SearchService:
                 async with conn.cursor() as cur:
                     await cur.execute(query, params)
                     rows = await cur.fetchall()
-                    cols = [desc[0] for desc in cur.description]
+                    cols = [desc[0] for desc in (cur.description or [])]
                     results = []
                     for row in rows:
                         r = dict(zip(cols, row))
                         result_dict = {
                             "id": r["id"],
                             "observed_at": r["observed_at"],
-                            "room_name": r["room_name"],
-                            "description": r["description"],
-                            "hazard_flags": r["hazard_flags"] or [],
-                            "object_list": r["object_list"] or [],
+                            "room_id": r.get("room_id"),
+                            "room_name": r.get("room_name"),
+                            "description": r.get("description"),
+                            "hazard_flags": r.get("hazard_flags") or [],
+                            "object_list": r.get("object_list") or [],
                         }
                         if has_image_query:
                             result_dict["image_similarity"] = (

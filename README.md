@@ -1,36 +1,36 @@
 # Semantic Memory Service
 
-This microservice provides long-term temporal and semantic context for the Cognitive Companion system. It uses PostgreSQL 18 with `pgvectorscale` (StreamingDiskANN) for high-performance vector similarity search over CLIP embeddings, structured scene observations, and person movement transitions.
+This microservice provides long-term temporal and semantic context for the Cognitive Companion system. It uses PostgreSQL with `pgvectorscale` (StreamingDiskANN) for high-performance vector similarity search over CLIP embeddings, structured scene observations, and person movement transitions.
 
 ## Features
 
-- **Semantic Search**: Perform vector similarity searches using CLIP embeddings.
-- **Temporal Context**: Query observations and movements within specific time windows.
-- **Object Tracking**: Aggregate and track the "last seen" status of objects in specific rooms.
-- **Movement Inference**: Track semantic room transitions (entering/exiting) for person identification and activity enrichment.
-- **Retention Management**: Automated data pruning based on configurable retention policies.
-- **High-Performance**: Built with FastAPI, `asyncpg` for asynchronous database access, and `uv` for lightning-fast dependency management.
+- **Semantic Search**: Vector similarity searches using CLIP and text embeddings (via Triton Inference Server)
+- **Temporal Context**: Query observations and movements within specific time windows
+- **Object Tracking**: Aggregate and track the "last seen" status of objects in specific rooms
+- **Movement Inference**: Track semantic room transitions (entering/exiting) for person identification and activity enrichment
+- **Retention Management**: Automated data pruning based on configurable retention policies
+- **High-Performance**: Built with FastAPI, `asyncpg` for asynchronous database access, and `uv` for dependency management
 
 ## Tech Stack
 
-- **Language**: Python 3.12+
+- **Language**: Python 3.14+
 - **Package Manager**: [uv](https://github.com/astral-sh/uv)
 - **Framework**: FastAPI
-- **Database**: PostgreSQL 18 + [pgvectorscale](https://github.com/timescale/pgvectorscale) (StreamingDiskANN indexes)
+- **Database**: PostgreSQL + [pgvectorscale](https://github.com/timescale/pgvectorscale) (StreamingDiskANN indexes)
 - **Migrations**: [Alembic](https://alembic.sqlalchemy.org/) with async psycopg3
 - **Linting/Formatting**: [Ruff](https://github.com/astral-sh/ruff)
 - **Static Analysis**: [Mypy](https://mypy-lang.org/)
-- **Testing**: Pytest
+- **Testing**: Pytest + pytest-asyncio
 - **Containerization**: Docker
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.12+
+- Python 3.14+
 - [uv](https://github.com/astral-sh/uv)
 - Docker & Docker Compose
-- PostgreSQL 18 (shared `timescale/timescaledb-ha:pg18` instance with pgvectorscale)
+- PostgreSQL with pgvectorscale extension
 
 ### Local Development
 
@@ -41,7 +41,6 @@ This microservice provides long-term temporal and semantic context for the Cogni
 
 2. **Run with Docker Compose**:
    ```bash
-   # PostgreSQL is provided by ../docker-compose.db.yml (included automatically)
    docker compose up --build
    ```
    The API will be available at `http://localhost:8400`.
@@ -51,15 +50,15 @@ This microservice provides long-term temporal and semantic context for the Cogni
    uv run pytest
    ```
 
-4. **Linting and Type Checking**:
+4. **Linting and type checking**:
    ```bash
    uv run ruff check .
-   uv run mypy .
+   uv run mypy app/ --ignore-missing-imports --explicit-package-bases
    ```
 
 ## API Documentation
 
-Once the service is running, you can access the interactive Swagger documentation at:
+Once the service is running, interactive Swagger documentation is available at:
 `http://localhost:8400/docs`
 
 ## API Endpoints
@@ -79,15 +78,11 @@ Once the service is running, you can access the interactive Swagger documentatio
 | POST | `/api/v1/movements/` | Create a new movement record |
 | GET | `/api/v1/movements/transitions` | Get movement transitions for a person |
 
-> **Note**: The `movements` router exists in `app/routers/movements.py` but is not yet registered in `app/main.py`. These endpoints are currently unavailable.
-
 ### Objects
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/objects/{room_id}/recent` | Get recent object presence in a room |
-
-> **Note**: The `objects` router exists in `app/routers/objects.py` but is not yet registered in `app/main.py`. These endpoints are currently unavailable.
 
 ### Health
 
@@ -107,27 +102,20 @@ The service uses standard HTTP status codes and returns errors in a consistent f
 
 ### Status Codes
 
+- `200 OK`: Successful request
 - `201 Created`: Resource successfully created
 - `400 Bad Request`: Invalid input or store operation failed
+- `422 Unprocessable Entity`: Request validation error
 - `500 Internal Server Error`: Service-level error (e.g., search failure)
-
-### Custom Exceptions
-
-Each service layer has its own exception type for targeted error handling:
-
-- `ObservationStoreError`: Observation creation/retrieval failures
-- `MovementStoreError`: Movement record failures
-- `SearchServiceError`: Vector search failures
-- `ObjectPresenceStoreError`: Object presence tracking failures
 
 ## Architecture
 
 The service follows a layered architecture:
 
-1. **API Layer (Routers)**: Defines RESTful endpoints with request validation and error handling.
-2. **Service Layer (Stores/Services)**: Implements business logic and database operations.
-3. **Data Access Layer (Connection)**: Manages PostgreSQL connection pooling via `asyncpg`.
-4. **Persistence Layer (PostgreSQL)**: Stores all structured and vector data using `pgvectorscale` (StreamingDiskANN indexes) and `pgvector`.
+1. **API Layer (Routers)**: RESTful endpoints with request validation and error handling
+2. **Service Layer (Stores/Services)**: Business logic and database operations
+3. **Data Access Layer (Connection)**: PostgreSQL connection pooling via psycopg3
+4. **Persistence Layer (PostgreSQL)**: Structured and vector data using pgvectorscale
 
 ### Lifecycle Management
 
@@ -140,16 +128,18 @@ The application uses FastAPI's lifespan context manager to handle:
 
 Configuration is managed via [pydantic-settings](https://docs.pydantic.dev/dev-v2/usage/pydantic_settings/):
 
-- `DATABASE_URL`: PostgreSQL connection string
+- `DATABASE_URL`: PostgreSQL connection string (default: `postgresql://postgres:postgres@localhost:5432/semantic_memory`)
 - `API_V1_STR`: API version prefix (default: `/api/v1`)
-- `PROJECT_NAME`: Service name for API documentation
-- `RETENTION_DAYS`: Default data retention period
-- `TEXT_EMBEDDING_MODEL`: Sentence-transformers model ID (default: `sentence-transformers/all-MiniLM-L6-v2`)
+- `PROJECT_NAME`: Service name for API documentation (default: `semantic-memory-service`)
+- `RETENTION_DAYS`: Default data retention period (default: `90`)
 - `TEXT_EMBEDDING_ENABLED`: Enable text embedding fallback (default: `true`)
+- `TRITON_URL`: Triton Inference Server gRPC endpoint (default: `localhost:8701`)
+- `TRITON_TEXT_EMBEDDING_MODEL`: Triton model name for text embeddings (default: `embeddinggemma-300m`)
+- `TRITON_TEXT_EMBEDDING_TOKENIZER_PATH`: Path to the tokenizer.json for the embedding model
 
 ## Database Migrations
 
-Database schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/). Migrations run automatically on application startup using Alembic's programmatic API.
+Database schema changes are managed with Alembic. Migrations run automatically on application startup.
 
 ### Creating a new migration
 
@@ -157,9 +147,9 @@ Database schema changes are managed with [Alembic](https://alembic.sqlalchemy.or
 uv run alembic revision -m "description of the change"
 ```
 
-This generates a new file in `app/db/alembic/versions/`. Fill in the `upgrade()` and `downgrade()` methods using `op.execute()` for raw SQL.
+This generates a new file in `app/db/alembic/versions/`. Fill in the `upgrade()` and `downgrade()` methods.
 
-To apply migrations manually (e.g., before starting the app):
+To apply migrations manually:
 
 ```bash
 uv run alembic upgrade head
@@ -167,25 +157,7 @@ uv run alembic upgrade head
 
 ### Schema
 
-The service uses the following tables:
-
-- `scene_observations`: Stores scene observations with CLIP embeddings
-- `person_movements`: Tracks person movement transitions between rooms
-- `object_presence`: Aggregates object presence by room
-
-## Development Standards
-
-This service adheres to high engineering standards:
-
-- **Type Safety**: Full type annotations using Python 3.12+ syntax
-- **Async/Await**: Asynchronous database operations using `asyncpg`
-- **Error Handling**: Centralized exception handlers with structured logging
-- **Code Quality**: Enforced via Ruff linting and Mypy type checking
-- **Testing**: Comprehensive test coverage for API and service layers
-
-## Known Issues
-
-- `aiosqlite` is listed as a dependency in `pyproject.toml` but never used - the service uses `asyncpg` exclusively.
-- Mypy is mentioned in the Development Standards but not listed in dev dependencies in `pyproject.toml`.
-- The `movements` and `objects` router modules exist but are not registered in `app/main.py` - their endpoints are currently unavailable.
-- The Dockerfile uses `python:3.11-slim` but `pyproject.toml` requires `>=3.12`.
+- `scene_observations`: Scene observations with CLIP and text embeddings
+- `person_movements`: Person movement transitions between rooms
+- `object_presence`: Object presence aggregated by room
+- `person_current_location`: Materialized view for current person locations

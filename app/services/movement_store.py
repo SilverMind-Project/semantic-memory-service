@@ -1,8 +1,9 @@
 """Store layer for person movements with proper error handling."""
 
+from datetime import datetime
+
 from app.db.connection import db
 from app.models.schemas import MovementCreate, MovementTransitionResponse
-from typing import List
 
 
 class MovementStoreError(Exception):
@@ -13,8 +14,12 @@ class MovementStoreError(Exception):
 class MovementStore:
     """Store layer for person movements."""
 
-    async def create(self, movement: MovementCreate) -> int:
-        """Create a new movement record."""
+    async def create(self, movement: MovementCreate) -> tuple[int, datetime]:
+        """Create a new movement record.
+
+        Returns:
+            (id, created_at) of the new movement.
+        """
         pool = db.get_pool()
         query = """
             INSERT INTO person_movements (
@@ -23,7 +28,7 @@ class MovementStore:
                 confidence, observed_at, observation_id
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
+            RETURNING id, created_at;
         """
         try:
             async with pool.connection() as conn:
@@ -50,7 +55,7 @@ class MovementStore:
             if row is None:
                 raise MovementStoreError("Failed to create movement")
 
-            return row[0]
+            return row[0], row[1]
         except MovementStoreError:
             raise
         except Exception as e:
@@ -62,14 +67,15 @@ class MovementStore:
         semantic: str | None = None,
         to_room_id: str | None = None,
         since_minutes: int | None = None,
-    ) -> List[MovementTransitionResponse]:
+    ) -> list[MovementTransitionResponse]:
         """Get movement transitions for a person."""
         pool = db.get_pool()
         params: list = [person_id]
 
         query = """
-            SELECT person_id, person_name, direction_semantic, to_room_name,
-                   confidence, observed_at
+            SELECT id, person_id, person_name, from_room_id, to_room_id,
+                   from_room_name, to_room_name, direction_semantic,
+                   confidence, observed_at, observation_id
             FROM person_movements
             WHERE person_id = %s
         """
@@ -83,7 +89,8 @@ class MovementStore:
             params.append(to_room_id)
 
         if since_minutes:
-            query += f" AND observed_at >= NOW() - INTERVAL '{since_minutes} minutes'"
+            query += " AND observed_at >= NOW() - INTERVAL '1 minute' * %s"
+            params.append(since_minutes)
 
         query += " ORDER BY observed_at DESC LIMIT 50"
 
@@ -92,7 +99,7 @@ class MovementStore:
                 async with conn.cursor() as cur:
                     await cur.execute(query, params)
                     rows = await cur.fetchall()
-                    cols = [desc[0] for desc in cur.description]
+                    cols = [desc[0] for desc in (cur.description or [])]
                     return [
                         MovementTransitionResponse(**dict(zip(cols, row)))
                         for row in rows

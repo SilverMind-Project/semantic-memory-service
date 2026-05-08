@@ -1,9 +1,10 @@
 """Store layer for scene observations with proper error handling."""
 
+import json
+from datetime import datetime
+
 from app.db.connection import db
 from app.models.schemas import ObservationCreate
-import json
-from typing import Optional
 
 
 class ObservationStoreError(Exception):
@@ -14,8 +15,12 @@ class ObservationStoreError(Exception):
 class ObservationStore:
     """Store layer for scene observations."""
 
-    async def create(self, obs: ObservationCreate) -> int:
-        """Create a new scene observation."""
+    async def create(self, obs: ObservationCreate) -> tuple[int, datetime]:
+        """Create a new scene observation.
+
+        Returns:
+            (id, created_at) of the new observation.
+        """
         pool = db.get_pool()
         query = """
             INSERT INTO scene_observations (
@@ -25,7 +30,7 @@ class ObservationStore:
                 media_paths_json, embedding
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
+            RETURNING id, created_at;
         """
         try:
             objects_json = json.dumps(obs.objects_json) if obs.objects_json else None
@@ -57,13 +62,13 @@ class ObservationStore:
             if row is None:
                 raise ObservationStoreError("Failed to create observation")
 
-            return row[0]
+            return row[0], row[1]
         except ObservationStoreError:
             raise
         except Exception as e:
             raise ObservationStoreError(f"Failed to create observation: {e}")
 
-    async def get_by_id(self, obs_id: int) -> Optional[dict]:
+    async def get_by_id(self, obs_id: int) -> dict | None:
         """Retrieve an observation by ID."""
         pool = db.get_pool()
         query = "SELECT * FROM scene_observations WHERE id = %s"
@@ -74,7 +79,7 @@ class ObservationStore:
                     row = await cur.fetchone()
                     if row is None:
                         return None
-                    cols = [desc[0] for desc in cur.description]
+                    cols = [desc[0] for desc in (cur.description or [])]
                     return dict(zip(cols, row))
         except Exception as e:
             raise ObservationStoreError(f"Failed to retrieve observation: {e}")

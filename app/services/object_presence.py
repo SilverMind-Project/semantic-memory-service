@@ -47,7 +47,7 @@ class ObjectPresenceStore:
             SELECT object_label, last_seen_at, observation_count
             FROM object_presence
             WHERE room_id = %s
-              AND last_seen_at >= NOW() - INTERVAL '%s minutes'
+              AND last_seen_at >= NOW() - INTERVAL '1 minute' * %s
             ORDER BY last_seen_at DESC
         """
         try:
@@ -55,7 +55,7 @@ class ObjectPresenceStore:
                 async with conn.cursor() as cur:
                     await cur.execute(query, (room_id, since_minutes))
                     rows = await cur.fetchall()
-                    cols = [desc[0] for desc in cur.description]
+                    cols = [desc[0] for desc in (cur.description or [])]
                     return [dict(zip(cols, row)) for row in rows]
         except Exception as e:
             raise ObjectPresenceStoreError(f"Failed to get object presence: {e}")

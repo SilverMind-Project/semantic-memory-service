@@ -1,12 +1,17 @@
 """API router for scene observations with proper error handling."""
 
 from fastapi import APIRouter, HTTPException, status
-from app.models.schemas import ObservationCreate, ObservationResponse, ObservationSearchRequest, ObservationSearchResult
+
+from app.config.config import settings
+from app.models.schemas import (
+    ObservationCreate,
+    ObservationResponse,
+    ObservationSearchRequest,
+    ObservationSearchResult,
+)
 from app.services.observation_store import ObservationStore, ObservationStoreError
 from app.services.search import SearchService, SearchServiceError
 from app.services.text_embedder import build_text_embedder
-from app.config.config import settings
-from typing import List
 
 router = APIRouter(prefix="/observations", tags=["observations"])
 
@@ -14,8 +19,9 @@ obs_store = ObservationStore()
 search_service = SearchService(
     text_embedder=build_text_embedder(
         enabled=settings.TEXT_EMBEDDING_ENABLED,
-        model_name=settings.TEXT_EMBEDDING_MODEL,
-        device="cpu",
+        triton_url=settings.TRITON_URL,
+        model_name=settings.TRITON_TEXT_EMBEDDING_MODEL,
+        tokenizer_path=settings.TRITON_TEXT_EMBEDDING_TOKENIZER_PATH,
     )
 )
 
@@ -34,14 +40,14 @@ async def create_observation(obs: ObservationCreate) -> ObservationResponse:
         HTTPException: If the observation cannot be created.
     """
     try:
-        obs_id = await obs_store.create(obs)
-        return {**obs.model_dump(), "id": obs_id, "created_at": "2026-04-14T00:00:00Z"}
+        obs_id, created_at = await obs_store.create(obs)
+        return ObservationResponse(**obs.model_dump(), id=obs_id, created_at=created_at)
     except ObservationStoreError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-@router.post("/search", response_model=List[ObservationSearchResult])
-async def search_observations(search_req: ObservationSearchRequest) -> List[ObservationSearchResult]:
+@router.post("/search", response_model=list[ObservationSearchResult])
+async def search_observations(search_req: ObservationSearchRequest) -> list[ObservationSearchResult]:
     """Search observations using vector similarity.
 
     Args:
@@ -81,8 +87,10 @@ async def prune_older_than(days: int = settings.RETENTION_DAYS) -> dict:
         RETURNING id
     """
     try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, days)
-        return {"deleted_count": len(rows)}
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, (days,))
+                rows = await cur.fetchall()
+        return {"pruned": len(rows)}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

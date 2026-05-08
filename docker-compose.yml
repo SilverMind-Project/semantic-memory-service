@@ -13,8 +13,8 @@ services:
     container_name: semantic-memory-service
     networks:
       - nanai
-    environment:
-      DATABASE_URL: postgresql://${SMS_DB_USER:-sms_user}:${SMS_DB_PASSWORD:?err}@postgres:5432/semantic_memory
+    env_file:
+      - .env
     ports:
       - "8400:8400"
     depends_on:
