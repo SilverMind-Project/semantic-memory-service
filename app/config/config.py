@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/semantic_memory"
+    DATABASE_URL: str = ""  # Must be set via environment; no default credentials
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "semantic-memory-service"
     RETENTION_DAYS: int = 90
