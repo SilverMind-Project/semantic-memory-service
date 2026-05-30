@@ -13,7 +13,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: "postgresql://${SMS_DB_USER:-sms_user}:${SMS_DB_PASSWORD:?err}@postgres:5432/semantic_memory"
+      DATABASE_URL: "postgresql://${SMS_DB_USER:?err}:${SMS_DB_PASSWORD:?err}@postgres:5432/semantic_memory"
     ports:
       - "8400:8400"
     restart: always
