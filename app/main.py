@@ -8,11 +8,12 @@ from fastapi.responses import JSONResponse
 from app.config.config import settings
 from app.db.connection import db
 from app.db.migrate import run_migrations
-from app.routers import observations, movements, objects
+from app.routers import observations, movements, objects, stats
 from app.services.observation_store import ObservationStoreError
 from app.services.movement_store import MovementStoreError
 from app.services.search import SearchServiceError
 from app.services.object_presence import ObjectPresenceStoreError
+from app.services.stats_store import StatsStoreError
 
 # Configure structured logging
 logging.basicConfig(
@@ -49,15 +50,17 @@ app = FastAPI(
 @app.exception_handler(MovementStoreError)
 @app.exception_handler(SearchServiceError)
 @app.exception_handler(ObjectPresenceStoreError)
+@app.exception_handler(StatsStoreError)
 async def service_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error("%s: %s", type(exc).__name__, exc)
-    status_code = 500 if isinstance(exc, SearchServiceError) else 400
+    status_code = 500 if isinstance(exc, (SearchServiceError, StatsStoreError)) else 400
     return JSONResponse(status_code=status_code, content={"detail": str(exc)})
 
 
 app.include_router(observations.router, prefix=settings.API_V1_STR)
 app.include_router(movements.router, prefix=settings.API_V1_STR)
 app.include_router(objects.router, prefix=settings.API_V1_STR)
+app.include_router(stats.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/health")

@@ -113,3 +113,19 @@ class ObjectPresenceResponse(BaseModel):
     observation_count: int
     last_observation_id: int
 
+
+# --- Write Health ---
+
+class ObservationsByDay(BaseModel):
+    day: datetime
+    source: str
+    count: int
+
+
+class WriteHealthResponse(BaseModel):
+    last_observation_at: datetime | None = None
+    last_movement_at: datetime | None = None
+    observations_by_day: list[ObservationsByDay] = Field(default_factory=list)
+    total_observations: int = 0
+    total_movements: int = 0
+
