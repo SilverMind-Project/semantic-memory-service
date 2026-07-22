@@ -27,9 +27,9 @@ class ObservationStore:
                 sensor_id, room_id, room_name, observed_at, source,
                 objects_json, persons_count, hazard_flags, description,
                 description_embedding, object_list, workflow_execution_id,
-                media_paths_json, embedding
+                media_paths_json, embedding, person_id, kind
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at;
         """
         try:
@@ -55,6 +55,8 @@ class ObservationStore:
                             obs.workflow_execution_id,
                             media_paths_json,
                             obs.embedding,
+                            obs.person_id,
+                            obs.kind,
                         ),
                     )
                     row = await cur.fetchone()

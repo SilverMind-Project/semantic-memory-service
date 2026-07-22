@@ -282,6 +282,79 @@ class TestSearchService:
         with pytest.raises(SearchServiceError, match="Search failed"):
             await service.search_observations(ObservationSearchRequest(limit=10))
 
+    @pytest.mark.asyncio
+    async def test_search_with_person_id_filter(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(person_id="amma", limit=10)
+        )
+        sql = cursor.execute.call_args[0][0]
+        params = cursor.execute.call_args[0][1]
+        assert "person_id = %s" in sql
+        assert "amma" in params
+
+    @pytest.mark.asyncio
+    async def test_search_with_kind_scene_matches_legacy_null(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(kind="scene", limit=10)
+        )
+        sql = cursor.execute.call_args[0][0]
+        assert "(kind = %s OR kind IS NULL)" in sql
+
+    @pytest.mark.asyncio
+    async def test_search_with_kind_guided_episode_is_exact_match(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(
+            ObservationSearchRequest(kind="guided_episode", limit=10)
+        )
+        sql = cursor.execute.call_args[0][0]
+        assert "kind = %s" in sql
+        assert "(kind = %s OR kind IS NULL)" not in sql
+
+    @pytest.mark.asyncio
+    async def test_search_result_includes_person_id_and_kind(self, monkeypatch):
+        cursor = _make_mock_cursor(
+            fetchall_return=[(
+                1, "2026-04-14T00:00:00Z", "room_1", "living_room",
+                "Guided routine ended", [], ["tea"], "amma", "guided_episode",
+            )],
+            description=[
+                ("id",), ("observed_at",), ("room_id",), ("room_name",),
+                ("description",), ("hazard_flags",), ("object_list",),
+                ("person_id",), ("kind",),
+            ],
+        )
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        results = await service.search_observations(
+            ObservationSearchRequest(kind="guided_episode", limit=10)
+        )
+        assert results[0].person_id == "amma"
+        assert results[0].kind == "guided_episode"
+
+    @pytest.mark.asyncio
+    async def test_search_unfiltered_unchanged(self, monkeypatch):
+        cursor = _make_mock_cursor()
+        _mock_db_pool(monkeypatch, cursor)
+
+        service = SearchService()
+        await service.search_observations(ObservationSearchRequest(limit=10))
+        sql = cursor.execute.call_args[0][0]
+        assert "person_id = %s" not in sql
+        assert "kind = %s" not in sql
+        assert "kind IS NULL" not in sql
+
 
 # =============================================================================
 # ObservationStore Tests
@@ -332,6 +405,40 @@ class TestObservationStore:
         )
         with pytest.raises(ObservationStoreError, match="Failed to create observation"):
             await store.create(obs)
+
+    @pytest.mark.asyncio
+    async def test_create_passes_person_id_and_kind(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=(7, datetime.now(timezone.utc)))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObservationStore()
+        obs = ObservationCreate(
+            room_id=None,
+            observed_at=datetime.now(timezone.utc),
+            source="guided_companion",
+            person_id="amma",
+            kind="guided_episode",
+        )
+        await store.create(obs)
+        params = cursor.execute.call_args[0][1]
+        assert params[-2] == "amma"
+        assert params[-1] == "guided_episode"
+
+    @pytest.mark.asyncio
+    async def test_create_defaults_person_id_and_kind_to_none(self, monkeypatch):
+        cursor = _make_mock_cursor(fetchone_return=(8, datetime.now(timezone.utc)))
+        _mock_db_pool(monkeypatch, cursor)
+
+        store = ObservationStore()
+        obs = ObservationCreate(
+            sensor_id="cam_1",
+            observed_at=datetime.now(timezone.utc),
+            source="scene_intel",
+        )
+        await store.create(obs)
+        params = cursor.execute.call_args[0][1]
+        assert params[-2] is None
+        assert params[-1] is None
 
 
 # =============================================================================

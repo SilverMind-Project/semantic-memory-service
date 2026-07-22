@@ -45,7 +45,10 @@ class SearchService:
         if has_text_query:
             similarity_columns.append("description_embedding <=> %s AS text_similarity")
 
-        select_part = "SELECT id, observed_at, room_id, room_name, description, hazard_flags, object_list"
+        select_part = (
+            "SELECT id, observed_at, room_id, room_name, description, hazard_flags, "
+            "object_list, person_id, kind"
+        )
         if similarity_columns:
             select_part += ", " + ", ".join(similarity_columns)
 
@@ -74,6 +77,20 @@ class SearchService:
         if search_req.hazard_flags_any:
             where_clauses.append("hazard_flags && %s")
             params.append(search_req.hazard_flags_any)
+
+        if search_req.person_id:
+            where_clauses.append("person_id = %s")
+            params.append(search_req.person_id)
+
+        if search_req.kind:
+            # "scene" also matches legacy rows written before the kind
+            # column existed (NULL kind), preserving pre-DL-M05 behavior.
+            if search_req.kind == "scene":
+                where_clauses.append("(kind = %s OR kind IS NULL)")
+                params.append(search_req.kind)
+            else:
+                where_clauses.append("kind = %s")
+                params.append(search_req.kind)
 
         if has_image_query:
             where_clauses.append("embedding <=> %s <= (1 - %s)")
@@ -119,6 +136,8 @@ class SearchService:
                             "description": r.get("description"),
                             "hazard_flags": r.get("hazard_flags") or [],
                             "object_list": r.get("object_list") or [],
+                            "person_id": r.get("person_id"),
+                            "kind": r.get("kind"),
                         }
                         if has_image_query:
                             result_dict["image_similarity"] = (

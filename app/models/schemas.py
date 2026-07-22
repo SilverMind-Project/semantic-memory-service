@@ -30,6 +30,10 @@ class ObservationCreate(BaseModel):
     workflow_execution_id: int | None = None
     media_paths_json: list[str] | None = None
     embedding: list[float] | None = Field(None, description="768-dim CLIP embedding")
+    person_id: str | None = None
+    # NULL means legacy scene record (DL-M05); "guided_episode" and
+    # "hygiene_verdict" are the other kinds a caller may write.
+    kind: str | None = None
 
 
 class ObservationResponse(ObservationCreate):
@@ -46,6 +50,9 @@ class ObservationSearchRequest(BaseModel):
     hazard_flags_any: list[str] | None = None
     limit: int = 20
     similarity_threshold: float = 0.75
+    person_id: str | None = None
+    # "scene" also matches legacy NULL-kind rows (see ObservationCreate.kind).
+    kind: str | None = None
 
 
 class ObservationSearchResult(BaseModel):
@@ -58,6 +65,8 @@ class ObservationSearchResult(BaseModel):
     object_list: list[str] = Field(default_factory=list)
     text_similarity: float | None = None
     image_similarity: float | None = None
+    person_id: str | None = None
+    kind: str | None = None
 
 
 # --- Movement Entities ---

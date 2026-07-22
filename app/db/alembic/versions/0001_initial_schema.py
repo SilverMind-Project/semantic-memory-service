@@ -37,6 +37,12 @@ def upgrade() -> None:
             embedding               vector(768),
             description_embedding   vector(768),
 
+            -- DL-M05: person_id attributes an observation to a resident;
+            -- kind distinguishes record taxonomy ("scene" / "guided_episode" /
+            -- "hygiene_verdict"). Both NULL on legacy scene rows, no backfill.
+            person_id       TEXT,
+            kind            TEXT,
+
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
     """)
@@ -44,6 +50,14 @@ def upgrade() -> None:
     op.execute("""
         CREATE INDEX idx_scene_obs_sensor_time
             ON scene_observations (sensor_id, observed_at DESC);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_person_id
+            ON scene_observations (person_id);
+    """)
+    op.execute("""
+        CREATE INDEX idx_scene_obs_kind
+            ON scene_observations (kind);
     """)
     op.execute("""
         CREATE INDEX idx_scene_obs_room_time
