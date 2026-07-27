@@ -14,7 +14,11 @@ _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
 
 
 def _get_alembic_config() -> Config:
-    return Config(str(_ALEMBIC_INI))
+    cfg = Config(str(_ALEMBIC_INI))
+    # Migrations run inside the app process, so env.py must leave the already
+    # configured app and uvicorn loggers alone. See env.py for the guard.
+    cfg.attributes["configure_logging"] = False
+    return cfg
 
 
 async def run_migrations() -> None:

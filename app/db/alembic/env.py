@@ -7,7 +7,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.config.config import settings
 
 config = context.config
-if config.config_file_name is not None:
+# fileConfig() resets root's handlers/level and disables pre-existing loggers.
+# The CLI wants that; in-process callers (app.main lifespan) do not, since it
+# would silence the app and uvicorn loggers for the rest of the process.
+if config.config_file_name is not None and config.attributes.get("configure_logging", True):
     fileConfig(config.config_file_name)
 
 target_metadata = None
