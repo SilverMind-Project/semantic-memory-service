@@ -14,13 +14,14 @@ class ObjectDetection(BaseModel):
 
 
 class ObservationCreate(BaseModel):
-    sensor_id: str | None = None
     room_id: str | None = None
     room_name: str | None = None
     observed_at: datetime
     source: str  # 'scene_intel' | 'llm_vision' | 'manual'
     objects_json: list[dict[str, object]] | None = None
-    persons_count: int | None = 0
+    # None means "not computed"; 0 means "counted, nobody there". Defaulting to
+    # 0 made every write claim an empty room.
+    persons_count: int | None = None
     hazard_flags: list[str] | None = Field(default_factory=list)
     description: str | None = None
     description_embedding: list[float] | None = Field(
@@ -67,6 +68,13 @@ class ObservationSearchResult(BaseModel):
     image_similarity: float | None = None
     person_id: str | None = None
     kind: str | None = None
+    # Returned so a caller assembling an LLM prompt can answer "how many people
+    # were there?", "where did this come from?", and "show me the frame" without
+    # a second round trip. None persons_count means not computed, not zero.
+    persons_count: int | None = None
+    source: str | None = None
+    media_paths_json: list[str] | None = None
+    objects_json: list[dict[str, object]] | None = None
 
 
 # --- Movement Entities ---
@@ -74,7 +82,6 @@ class ObservationSearchResult(BaseModel):
 class MovementCreate(BaseModel):
     person_id: str
     person_name: str | None = None
-    sensor_id: str | None = None
     from_room_id: str | None = None
     to_room_id: str | None = None
     from_room_name: str | None = None

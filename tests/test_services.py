@@ -1,7 +1,7 @@
 """Tests for services: text embedder, search, observation store, movement store, object presence."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -369,7 +369,6 @@ class TestObservationStore:
 
         store = ObservationStore()
         obs = ObservationCreate(
-            sensor_id="cam_1",
             observed_at=datetime.now(timezone.utc),
             source="scene_intel",
         )
@@ -378,13 +377,61 @@ class TestObservationStore:
         assert created_at.year == 2026 and created_at.month == 5 and created_at.day == 7
 
     @pytest.mark.asyncio
+    async def test_create_also_records_object_presence(self, monkeypatch):
+        """object_presence must be written on the observation's own cursor.
+
+        Nothing populated that table before, so get_recent_objects always
+        returned [] and every room-context summary lost its object list.
+        """
+        observed = datetime(2026, 7, 28, 9, 0, tzinfo=timezone.utc)
+        cursor = _make_mock_cursor(fetchone_return=(42, observed))
+        _mock_db_pool(monkeypatch, cursor)
+
+        await ObservationStore().create(
+            ObservationCreate(
+                observed_at=observed,
+                source="scene_intel",
+                room_id="kitchen",
+                object_list=["cup", "person"],
+            )
+        )
+
+        presence_calls = [
+            c for c in cursor.execute.await_args_list if "object_presence" in c.args[0]
+        ]
+        assert len(presence_calls) == 2, "one upsert per distinct label"
+        # Sorted for determinism, and carrying the observation's capture time
+        # rather than NOW().
+        assert presence_calls[0].args[1] == ("kitchen", "cup", observed, observed, 42)
+        assert presence_calls[1].args[1] == ("kitchen", "person", observed, observed, 42)
+
+    @pytest.mark.asyncio
+    async def test_create_skips_presence_without_a_room(self, monkeypatch):
+        """Presence is keyed by room; a guided episode has none."""
+        observed = datetime(2026, 7, 28, 9, 0, tzinfo=timezone.utc)
+        cursor = _make_mock_cursor(fetchone_return=(42, observed))
+        _mock_db_pool(monkeypatch, cursor)
+
+        await ObservationStore().create(
+            ObservationCreate(
+                observed_at=observed,
+                source="guided_companion",
+                room_id=None,
+                object_list=["morning_routine"],
+            )
+        )
+
+        assert not [
+            c for c in cursor.execute.await_args_list if "object_presence" in c.args[0]
+        ]
+
+    @pytest.mark.asyncio
     async def test_create_raises_on_failure(self, monkeypatch):
         cursor = _make_mock_cursor(fetchone_return=None)
         _mock_db_pool(monkeypatch, cursor)
 
         store = ObservationStore()
         obs = ObservationCreate(
-            sensor_id="cam_1",
             observed_at=datetime.now(timezone.utc),
             source="scene_intel",
         )
@@ -399,7 +446,6 @@ class TestObservationStore:
 
         store = ObservationStore()
         obs = ObservationCreate(
-            sensor_id="cam_1",
             observed_at=datetime.now(timezone.utc),
             source="scene_intel",
         )
@@ -431,7 +477,6 @@ class TestObservationStore:
 
         store = ObservationStore()
         obs = ObservationCreate(
-            sensor_id="cam_1",
             observed_at=datetime.now(timezone.utc),
             source="scene_intel",
         )
@@ -455,7 +500,6 @@ class TestMovementStore:
         store = MovementStore()
         m = MovementCreate(
             person_id="p1",
-            sensor_id="s1",
             direction_raw="left_to_right",
             direction_semantic="entering",
             confidence=0.9,
@@ -473,7 +517,6 @@ class TestMovementStore:
         store = MovementStore()
         m = MovementCreate(
             person_id="p1",
-            sensor_id="s1",
             direction_raw="left_to_right",
             direction_semantic="entering",
             confidence=0.9,

@@ -36,7 +36,11 @@ def _wide_version_table_impl(self, **kw):
     return table
 
 
-DefaultImpl.version_table_impl = _wide_version_table_impl
+# Patching the class attribute is the supported way to reach this hook: Alembic
+# resolves the impl per dialect through its own registry, so a subclass defined
+# here would never be selected. mypy flags any method assignment, hence the
+# targeted ignore rather than a blanket one.
+DefaultImpl.version_table_impl = _wide_version_table_impl  # type: ignore[method-assign]
 
 
 def _widen_existing_version_table(connection) -> None:

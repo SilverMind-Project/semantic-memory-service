@@ -36,7 +36,7 @@ uv run pytest tests/test_api.py -v      # API only
 # Lint / type-check
 uv run ruff check .                     # lint
 uv run ruff check --fix .               # fix lint
-uv run mypy app/ --ignore-missing-imports --explicit-package-bases
+uv run mypy app/                        # settings live in [tool.mypy]
 
 # Database
 uv run alembic revision -m "description"  # autogenerate new migration

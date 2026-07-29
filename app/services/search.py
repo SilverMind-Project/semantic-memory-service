@@ -22,6 +22,10 @@ class SearchService:
             tokenizer_path=settings.TRITON_TEXT_EMBEDDING_TOKENIZER_PATH,
         )
 
+    async def aclose(self) -> None:
+        """Release the embedder's upstream connection. Called from the lifespan."""
+        await self._text_embedder.aclose()
+
     async def search_observations(
         self,
         search_req: ObservationSearchRequest,
@@ -38,16 +42,21 @@ class SearchService:
             query_text_embedding = await self._text_embedder.embed(search_req.query_text or "")
             has_text_query = bool(query_text_embedding)
 
-        # Build SELECT
+        # Build SELECT.
+        # ``<=>`` is cosine *distance* (0 = identical), so it is converted to a
+        # similarity here. Selecting the raw distance under a name ending in
+        # "_similarity" and then ordering DESC ranked the least similar rows
+        # first; the WHERE clauses below still compare against raw distance.
         similarity_columns = []
         if has_image_query:
-            similarity_columns.append("embedding <=> %s AS image_similarity")
+            similarity_columns.append("1 - (embedding <=> %s) AS image_similarity")
         if has_text_query:
-            similarity_columns.append("description_embedding <=> %s AS text_similarity")
+            similarity_columns.append("1 - (description_embedding <=> %s) AS text_similarity")
 
         select_part = (
             "SELECT id, observed_at, room_id, room_name, description, hazard_flags, "
-            "object_list, person_id, kind"
+            "object_list, person_id, kind, persons_count, source, media_paths_json, "
+            "objects_json"
         )
         if similarity_columns:
             select_part += ", " + ", ".join(similarity_columns)
@@ -138,14 +147,22 @@ class SearchService:
                             "object_list": r.get("object_list") or [],
                             "person_id": r.get("person_id"),
                             "kind": r.get("kind"),
+                            "persons_count": r.get("persons_count"),
+                            "source": r.get("source"),
+                            "media_paths_json": r.get("media_paths_json"),
+                            "objects_json": r.get("objects_json"),
                         }
+                        # Test against None, not truthiness: a similarity of
+                        # exactly 0.0 is a real score, not a missing one.
                         if has_image_query:
+                            raw_image = r.get("image_similarity")
                             result_dict["image_similarity"] = (
-                                float(r["image_similarity"]) if r.get("image_similarity") else None
+                                float(raw_image) if raw_image is not None else None
                             )
                         if has_text_query:
+                            raw_text = r.get("text_similarity")
                             result_dict["text_similarity"] = (
-                                float(r["text_similarity"]) if r.get("text_similarity") else None
+                                float(raw_text) if raw_text is not None else None
                             )
                         results.append(ObservationSearchResult(**result_dict))
                     return results

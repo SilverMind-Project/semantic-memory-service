@@ -15,6 +15,14 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # triton_shared is an optional runtime dependency, imported lazily inside
+    # _ensure_client() so the service starts without it. These names exist for
+    # annotations only and are never imported at runtime.
+    from triton_shared.client.grpc import TritonGrpcClient
+    from triton_shared.models.embedder import TextEmbedder as _TritonEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,10 @@ class TextEmbedder(ABC):
     def embedding_dim(self) -> int:
         """Dimension of the embedding vectors produced by this model."""
         ...
+
+    async def aclose(self) -> None:
+        """Release any upstream connection. No-op unless an embedder holds one."""
+        return None
 
 
 class NullTextEmbedder(TextEmbedder):
@@ -80,12 +92,19 @@ class TritonTextEmbedder(TextEmbedder):
         self._triton_url = triton_url
         self._model_name = model_name
         self._tokenizer_path = tokenizer_path
-        self._embedder = None  # triton_shared.models.embedder.TextEmbedder
+        self._embedder: _TritonEmbedder | None = None
+        self._grpc_client: TritonGrpcClient | None = None
         self._dim: int = 768  # embeddinggemma-300m output dimension
 
-    async def _ensure_client(self) -> None:
+    async def _ensure_client(self) -> _TritonEmbedder:
+        """Return the lazily built embedder, connecting to Triton on first use.
+
+        Returns the embedder rather than ``None`` so callers get a non-optional
+        value; assigning to ``self._embedder`` alone leaves every call site
+        needing to re-narrow the attribute.
+        """
         if self._embedder is not None:
-            return
+            return self._embedder
         from triton_shared.client.grpc import TritonGrpcClient
         from triton_shared.models.embedder import TextEmbedder as _TritonEmbedder
 
@@ -102,6 +121,7 @@ class TritonTextEmbedder(TextEmbedder):
             tokenizer_path=self._tokenizer_path,
         )
         logger.info("Triton text embedder ready dim=%d", self._dim)
+        return self._embedder
 
     async def embed(self, text: str) -> list[float]:
         """Return an L2-normalized embedding for *text*.
@@ -110,8 +130,26 @@ class TritonTextEmbedder(TextEmbedder):
         """
         if not text or not text.strip():
             return []
-        await self._ensure_client()
-        return await self._embedder.embed_query(text)
+        embedder = await self._ensure_client()
+        result: list[float] = await embedder.embed_query(text)
+        return result
+
+    async def aclose(self) -> None:
+        """Release the Triton gRPC connection opened by ``_ensure_client``.
+
+        ``_ensure_client`` enters the client's async context manager but nothing
+        exited it, so the connection outlived the process's use of it. Safe to
+        call when the client was never built.
+        """
+        if self._grpc_client is None:
+            return
+        client: Any = self._grpc_client
+        self._grpc_client = None
+        self._embedder = None
+        try:
+            await client.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.warning("Triton gRPC client close failed", exc_info=True)
 
     @property
     def is_available(self) -> bool:

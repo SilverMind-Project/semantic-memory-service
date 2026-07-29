@@ -3,6 +3,14 @@
 Revision ID: 0001
 Revises:
 Create Date: 2026-05-08 12:00:00.000000
+
+A memory can be assembled from several frames, and in a multi-camera room from
+several cameras, so a single ``sensor_id`` cannot name its origin. The column is
+deliberately absent from both ``scene_observations`` and ``person_movements``;
+per-frame provenance belongs in ``media_paths_json`` / ``objects_json``, which
+hold one entry per contributing frame. ``idx_scene_obs_sensor_time`` went with
+it; ``idx_scene_obs_room_time`` already covers the room-plus-time access pattern
+that every query in ``app/services/search.py`` actually uses.
 """
 from typing import Sequence, Union
 from alembic import op
@@ -19,7 +27,6 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE scene_observations (
             id              BIGSERIAL PRIMARY KEY,
-            sensor_id       TEXT NOT NULL,
             room_id         TEXT,
             room_name       TEXT,
             observed_at     TIMESTAMPTZ NOT NULL,
@@ -47,10 +54,6 @@ def upgrade() -> None:
         );
     """)
 
-    op.execute("""
-        CREATE INDEX idx_scene_obs_sensor_time
-            ON scene_observations (sensor_id, observed_at DESC);
-    """)
     op.execute("""
         CREATE INDEX idx_scene_obs_person_id
             ON scene_observations (person_id);
@@ -89,7 +92,6 @@ def upgrade() -> None:
             person_id       TEXT NOT NULL,
             person_name     TEXT,
 
-            sensor_id       TEXT NOT NULL,
             from_room_id    TEXT,
             to_room_id      TEXT,
             from_room_name  TEXT,

@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
     logger.info("Database connection established")
     yield
     logger.info("Shutting down semantic memory service")
+    # The search service's text embedder holds a Triton gRPC connection opened
+    # lazily on first use; nothing else exits it.
+    await observations.search_service.aclose()
     await db.disconnect()
     logger.info("Database connection closed")
 

@@ -61,7 +61,7 @@ semantic-memory-service/
 │       ├── observation_store.py   ObservationStore: create, get_by_id
 │       ├── movement_store.py      MovementStore: create, get_transitions
 │       ├── search.py              SearchService: vector similarity + metadata filter search
-│       ├── object_presence.py     ObjectPresenceStore: upsert_presence, get_by_room, delete_old_records
+│       ├── object_presence.py     ObjectPresenceStore: upsert_presence, upsert_many_on_cursor, get_by_room, delete_old_records
 │       └── text_embedder.py       TextEmbedder ABC, TritonTextEmbedder, NullTextEmbedder, build_text_embedder()
 ├── config/                        (currently empty; reserved for future config files)
 ├── tests/
@@ -191,13 +191,12 @@ Base path: `/api/v1`
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `sensor_id` | `str \| None` | No | Source sensor |
 | `room_id` | `str \| None` | No | Room identifier |
 | `room_name` | `str \| None` | No | Human-readable room name |
 | `observed_at` | `datetime` | Yes | When the observation was made |
 | `source` | `str` | Yes | `scene_intel`, `llm_vision`, or `manual` |
 | `objects_json` | `list[dict] \| None` | No | Full object detection data |
-| `persons_count` | `int \| None` | No | Count of persons detected |
+| `persons_count` | `int \| None` | No | People present. `None` means not counted, which is not the same as `0`. Never a sum across frames: the writer takes the per-frame maximum, since one person in N frames yields N detections. |
 | `hazard_flags` | `list[str] \| None` | No | Hazard labels (e.g. `["fire", "weapon"]`) |
 | `description` | `str \| None` | No | Natural language description |
 | `description_embedding` | `list[float] \| None` | No | 768-dim text embedding |
@@ -219,7 +218,9 @@ Base path: `/api/v1`
 | `limit` | `int` | 20 | Max results |
 | `similarity_threshold` | `float` | 0.75 | Cosine similarity floor (0-1) |
 
-Search uses `<=>` (cosine distance) with pgvectorscale StreamingDiskANN indexes. When both `query_embedding` and `query_text` are provided, results are ordered by the average of the two similarity scores.
+Search uses `<=>` (cosine distance) with pgvectorscale StreamingDiskANN indexes. `<=>` returns a distance where 0 is identical, so the SELECT converts it with `1 - (embedding <=> $1)` and exposes a *similarity* under `image_similarity` / `text_similarity`; `ORDER BY ... DESC` is correct only against that conversion. When both `query_embedding` and `query_text` are provided, results are ordered by the average of the two similarity scores.
+
+**ObservationSearchResult fields:** `id`, `observed_at`, `room_id`, `room_name`, `description`, `hazard_flags`, `object_list`, `person_id`, `kind`, `text_similarity`, `image_similarity`, plus `persons_count`, `source`, `media_paths_json`, and `objects_json`. The last four exist so a caller assembling an LLM prompt can answer "how many people were there", "where did this come from", and "show me the frame" without a second round trip.
 
 ### 6.2 Movements
 
@@ -234,7 +235,6 @@ Search uses `<=>` (cosine distance) with pgvectorscale StreamingDiskANN indexes.
 | --- | --- | --- | --- |
 | `person_id` | `str` | Yes | Person identifier |
 | `person_name` | `str \| None` | No | Human-readable name |
-| `sensor_id` | `str \| None` | No | Camera that captured the movement |
 | `from_room_id` | `str \| None` | No | Source room |
 | `to_room_id` | `str \| None` | No | Destination room |
 | `from_room_name` | `str \| None` | No | Source room display name |
@@ -276,9 +276,10 @@ Three tables and one materialized view. All timestamps are `TIMESTAMPTZ`. Vector
 
 ### 7.1 scene_observations
 
+There is no `sensor_id`. An observation may be assembled from several frames, and in a multi-camera room from several cameras, so one sensor cannot name its origin; per-frame provenance belongs in `media_paths_json` / `objects_json`.
+
 ```sql
 id                      BIGSERIAL PRIMARY KEY
-sensor_id               TEXT NOT NULL
 room_id                 TEXT
 room_name               TEXT
 observed_at             TIMESTAMPTZ NOT NULL
@@ -296,7 +297,6 @@ created_at              TIMESTAMPTZ DEFAULT NOW()
 ```
 
 Indexes:
-- B-tree on `(sensor_id, observed_at DESC)`
 - B-tree on `(room_id, observed_at DESC)`
 - GIN on `hazard_flags`
 - GIN on `object_list`
@@ -309,7 +309,6 @@ Indexes:
 id                      BIGSERIAL PRIMARY KEY
 person_id               TEXT NOT NULL
 person_name             TEXT
-sensor_id               TEXT NOT NULL
 from_room_id            TEXT
 to_room_id              TEXT
 from_room_name          TEXT
@@ -340,7 +339,9 @@ observation_count       INT DEFAULT 1
 last_observation_id     BIGINT REFERENCES scene_observations(id)
 ```
 
-Unique constraint on `(room_id, object_label)`. Insert uses `ON CONFLICT ... DO UPDATE` upsert semantics: `last_seen_at`, `observation_count`, and `last_observation_id` are updated on conflict.
+Unique constraint on `(room_id, object_label)`. Insert uses `ON CONFLICT ... DO UPDATE` upsert semantics: `first_seen_at` takes the `LEAST`, `last_seen_at` the `GREATEST`, and `observation_count` and `last_observation_id` are updated on conflict.
+
+Written by `ObservationStore.create` on the observation's own cursor, so both land in one transaction. Timestamps come from the observation's `observed_at`, not `NOW()`. An observation with no `room_id` (a guided episode, say) contributes nothing, since presence is keyed by room.
 
 ---
 

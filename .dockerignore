@@ -1,0 +1,43 @@
+# Keep the build context to the few files the image actually needs.
+# Without this the context was 826MB, nearly all of it the host virtualenv,
+# and `COPY . .` baked .env (with database credentials) into an image layer.
+
+# Host virtualenv: 803MB of binaries built for the host, not the image.
+.venv/
+venv/
+
+# Secrets. Configuration reaches the container through env_file/environment
+# in docker-compose.yml, never through an image layer.
+.env
+.env.*
+!.env.example
+
+# VCS and tooling state
+.git/
+.gitignore
+.claude/
+.github/
+
+# Caches and build artifacts
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Not needed at runtime
+tests/
+config/
+docker-compose.yml
+Dockerfile
+.dockerignore
+AGENTS.md
+CLAUDE.md
+LICENSE
+uv.lock
+
+# README.md and pyproject.toml are deliberately NOT ignored: hatchling reads
+# both when building the wheel.

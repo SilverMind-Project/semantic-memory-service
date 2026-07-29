@@ -34,6 +34,15 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+[tool.mypy]
+# Settings live here rather than on the command line so the CLI, an editor, and
+# CI all agree. check_untyped_defs is on because the codebase already passes it;
+# without it mypy silently skips the body of every unannotated function.
+python_version = "3.14"
+ignore_missing_imports = true
+explicit_package_bases = true
+check_untyped_defs = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

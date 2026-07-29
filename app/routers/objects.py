@@ -1,6 +1,6 @@
 """API router for object presence."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -22,14 +22,23 @@ async def get_recent_objects(room_id: str, since_minutes: int = 60) -> list[dict
     if not rows:
         return []
 
-    now = datetime.now()
+    # last_seen_at is returned alongside the relative form: consumers model an
+    # absolute timestamp, and deriving one back from a rounded "minutes ago"
+    # loses the original instant.
+    now = datetime.now(UTC)
     return [
         {
             "label": r["object_label"],
+            "last_seen_at": r["last_seen_at"],
             "last_seen_minutes_ago": round(
-                (now - r["last_seen_at"].replace(tzinfo=None)).total_seconds() / 60
+                (now - _as_utc(r["last_seen_at"])).total_seconds() / 60
             ),
             "observation_count": r["observation_count"],
         }
         for r in rows
     ]
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat a naive timestamp as UTC; the column is TIMESTAMPTZ."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)

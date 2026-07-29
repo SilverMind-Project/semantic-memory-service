@@ -5,6 +5,7 @@ from datetime import datetime
 
 from app.db.connection import db
 from app.models.schemas import ObservationCreate
+from app.services.object_presence import ObjectPresenceStore
 
 
 class ObservationStoreError(Exception):
@@ -24,12 +25,12 @@ class ObservationStore:
         pool = db.get_pool()
         query = """
             INSERT INTO scene_observations (
-                sensor_id, room_id, room_name, observed_at, source,
+                room_id, room_name, observed_at, source,
                 objects_json, persons_count, hazard_flags, description,
                 description_embedding, object_list, workflow_execution_id,
                 media_paths_json, embedding, person_id, kind
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at;
         """
         try:
@@ -41,7 +42,6 @@ class ObservationStore:
                     await cur.execute(
                         query,
                         (
-                            obs.sensor_id,
                             obs.room_id,
                             obs.room_name,
                             obs.observed_at,
@@ -60,9 +60,22 @@ class ObservationStore:
                         ),
                     )
                     row = await cur.fetchone()
+                    if row is None:
+                        raise ObservationStoreError("Failed to create observation")
 
-            if row is None:
-                raise ObservationStoreError("Failed to create observation")
+                    # Same cursor, same transaction: object_presence had no
+                    # writer at all, so get_recent_objects always returned []
+                    # and every room-context summary lost its object list.
+                    # Presence is keyed by room, so a roomless observation
+                    # (a guided episode, say) contributes nothing.
+                    if obs.room_id and obs.object_list:
+                        await ObjectPresenceStore.upsert_many_on_cursor(
+                            cur,
+                            room_id=obs.room_id,
+                            object_labels=obs.object_list,
+                            observation_id=row[0],
+                            observed_at=obs.observed_at,
+                        )
 
             return row[0], row[1]
         except ObservationStoreError:

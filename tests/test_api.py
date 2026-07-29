@@ -88,7 +88,6 @@ async def async_client():
 
 def _obs_payload(**overrides):
     return {
-        "sensor_id": "camera_001",
         "room_id": "kitchen",
         "room_name": "Kitchen",
         "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -213,7 +212,6 @@ def _movement_payload(**overrides):
     return {
         "person_id": "person_1",
         "person_name": "Alice",
-        "sensor_id": "cam_1",
         "from_room_id": "living_room",
         "to_room_id": "kitchen",
         "from_room_name": "Living Room",

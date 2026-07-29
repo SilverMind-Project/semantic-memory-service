@@ -23,11 +23,11 @@ class MovementStore:
         pool = db.get_pool()
         query = """
             INSERT INTO person_movements (
-                person_id, person_name, sensor_id, from_room_id, to_room_id,
+                person_id, person_name, from_room_id, to_room_id,
                 from_room_name, to_room_name, direction_raw, direction_semantic,
                 confidence, observed_at, observation_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at;
         """
         try:
@@ -38,7 +38,6 @@ class MovementStore:
                         (
                             movement.person_id,
                             movement.person_name,
-                            movement.sensor_id,
                             movement.from_room_id,
                             movement.to_room_id,
                             movement.from_room_name,
